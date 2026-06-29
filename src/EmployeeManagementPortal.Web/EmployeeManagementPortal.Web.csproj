@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>EmployeeManagementPortal.Web</RootNamespace>
+    <AssemblyName>EmployeeManagementPortal.Web</AssemblyName>
+    <UserSecretsId>emp-portal-secrets-8f7e2b3a</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.4">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\EmployeeManagementPortal.Application\EmployeeManagementPortal.Application.csproj" />
+    <ProjectReference Include="..\EmployeeManagementPortal.Infrastructure\EmployeeManagementPortal.Infrastructure.csproj" />
+    <ProjectReference Include="..\EmployeeManagementPortal.Domain\EmployeeManagementPortal.Domain.csproj" />
+  </ItemGroup>
+
+</Project>

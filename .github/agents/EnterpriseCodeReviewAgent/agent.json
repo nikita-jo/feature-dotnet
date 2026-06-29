@@ -1,0 +1,5 @@
+{
+  "name": "EnterpriseCodeReviewAgent",
+  "version": "1.0.0",
+  "description": "Cross-cutting executive code review combining coverage, SonarQube and CodeQL reports."
+}

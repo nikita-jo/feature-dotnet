@@ -1,0 +1,19 @@
+name: "CodeQL"
+
+queries:
+  - uses: security-and-quality
+
+paths-ignore:
+  - '**/bin/**'
+  - '**/obj/**'
+  - '**/wwwroot/**'
+  - '**/coverage*/**'
+  - '**/TestResults/**'
+  - '**/*.designer.cs'
+  - '**/*.generated.cs'
+
+query-filters:
+  - exclude:
+      id: cs/useless-cast-to-base
+  - exclude:
+      id: cs/irrelevant-casts

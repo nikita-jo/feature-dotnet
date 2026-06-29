@@ -1,0 +1,5 @@
+{
+  "name": "SonarSecurityAgent",
+  "version": "1.0.0",
+  "description": "Fetches SonarQube Quality Gate state and emits a markdown + JSON summary."
+}

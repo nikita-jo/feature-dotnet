@@ -1,0 +1,5 @@
+{
+  "name": "SecurityAnalysisAgent",
+  "version": "1.0.0",
+  "description": "Parses CodeQL SARIF output, maps to OWASP/CWE and computes a risk score."
+}

@@ -1,0 +1,13 @@
+{
+  "generatedAt": "2026-06-29T10:00:00Z",
+  "coverage": {
+    "lineRate": "92.50",
+    "branchRate": "88.40",
+    "threshold": 85,
+    "pass": true
+  },
+  "uncoveredFiles": [],
+  "recommendations": [
+    "Coverage meets the threshold. Consider adding edge-case tests to raise branch coverage."
+  ]
+}
