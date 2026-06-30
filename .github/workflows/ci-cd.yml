@@ -254,6 +254,7 @@ jobs:
           path: .
 
       - name: Run SonarQube Scan
+        if: ${{ secrets.SONAR_TOKEN != '' && secrets.SONAR_HOST_URL != '' }}
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
@@ -261,6 +262,20 @@ jobs:
         run: |
           dotnet tool install -g dotnet-sonarscanner
           export PATH="$PATH:$HOME/.dotnet/tools"
+          # PR-specific properties are only valid when the run was triggered by a
+          # pull_request event. On push, github.event.pull_request.* and
+          # github.head_ref are empty, which SonarScanner rejects as an invalid
+          # property value.
+          PR_ARGS=""
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            PR_ARGS="/d:sonar.pullrequest.provider=github \
+              /d:sonar.pullrequest.github.repository=${{ github.repository }} \
+              /d:sonar.pullrequest.key=${{ github.event.pull_request.number }} \
+              /d:sonar.pullrequest.branch=${{ github.head_ref }}"
+            BRANCH_NAME="${{ github.head_ref }}"
+          else
+            BRANCH_NAME="${{ github.ref_name }}"
+          fi
           dotnet-sonarscanner begin \
             /k:"EmployeeManagementPortal" \
             /o:"enterprise-corp" \
@@ -268,14 +283,12 @@ jobs:
             /d:sonar.token="${{ secrets.SONAR_TOKEN }}" \
             /d:sonar.cs.opencover.reportsPaths="coverage.opencover.xml" \
             /d:sonar.coverage.exclusions="**/Tests/**,**/wwwroot/**,**/*.cshtml" \
-            /d:sonar.pullrequest.provider=github \
-            /d:sonar.pullrequest.github.repository=${{ github.repository }} \
-            /d:sonar.pullrequest.key=${{ github.event.pull_request.number }} \
-            /d:sonar.pullrequest.branch=${{ github.head_ref }} \
-            /d:sonar.branch.name=${{ github.head_ref || github.ref_name }}
+            /d:sonar.branch.name="$BRANCH_NAME" \
+            $PR_ARGS
           dotnet build ${{ env.SOLUTION }} --no-incremental
           dotnet-sonarscanner end /d:sonar.token="${{ secrets.SONAR_TOKEN }}"
       - name: Sonar Security Agent
+        if: ${{ secrets.SONAR_TOKEN != '' && secrets.SONAR_HOST_URL != '' }}
         uses: actions/github-script@v7
         with:
           script: |
@@ -316,6 +329,7 @@ jobs:
             require('fs').writeFileSync('security-summary.md', md);
             require('fs').writeFileSync('security-summary.json', JSON.stringify(summary, null, 2));
       - name: Upload security summary
+        if: ${{ secrets.SONAR_TOKEN != '' && secrets.SONAR_HOST_URL != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: security-summary
