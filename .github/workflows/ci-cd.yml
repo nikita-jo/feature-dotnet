@@ -125,10 +125,10 @@ jobs:
       - name: Generate HTML coverage report
         run: |
           dotnet tool install -g dotnet-reportgenerator-globaltool
-          ~/.dotnet/tools/reportgenerator
-            -reports:coverage.cobertura.xml
-            -targetdir:coverage-report
-            -reporttypes:Html
+          ~/.dotnet/tools/reportgenerator \
+            -reports:coverage.cobertura.xml \
+            -targetdir:coverage-report \
+            -reporttypes:Html \
             -assemblyfilters:-EmployeeManagementPortal.Web
 
       - name: Publish coverage artifacts
