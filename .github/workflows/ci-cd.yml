@@ -146,20 +146,20 @@ jobs:
           path: '**/TestResults/**'
           if-no-files-found: warn
 
-      - name: Coverage Analysis Agent (NVIDIA NIM)
-        id: coverage-analysis
+      - name: Analyze Coverage with AI (NVIDIA NIM)
+        id: analyze_coverage
         if: env.NVIDIA_API_KEY != ''
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
             const { execSync } = require('child_process');
-            const core = require('@actions/core');
+            const githubCore = require('@actions/core');
             
             // Parse coverage report
-            const cobertura = fs.readFileSync('coverage.cobertura.xml', 'utf-8');
-            const coverageMatch = cobertura.match(/line-rate="([0-9.]+)"/);
-            const branchMatch = cobertura.match(/branch-rate="([0-9.]+)"/);
+            const coberturaXml = fs.readFileSync('coverage.cobertura.xml', 'utf-8');
+            const coverageMatch = coberturaXml.match(/line-rate="([0-9.]+)"/);
+            const branchMatch = coberturaXml.match(/branch-rate="([0-9.]+)"/);
             const lineRate = coverageMatch ? parseFloat(coverageMatch[1]) : 0;
             const branchRate = branchMatch ? parseFloat(branchMatch[1]) : 0;
             const linePct = (lineRate * 100).toFixed(2);
@@ -169,29 +169,29 @@ jobs:
             
             // Parse test results
             const trxFiles = execSync('find . -name "*.trx"', { encoding: 'utf8' }).trim().split('\n').filter(Boolean);
-            let failed = 0, total = 0, passed = 0;
+            let failedCount = 0, totalTests = 0, passedCount = 0;
             for (const f of trxFiles) {
-              const c = fs.readFileSync(f, 'utf-8');
-              const m = c.match(/total="(\d+)" passed="(\d+)" failed="(\d+)"/);
-              if (m) {
-                total += parseInt(m[1]);
-                passed += parseInt(m[2]);
-                failed += parseInt(m[3]);
+              const trxContent = fs.readFileSync(f, 'utf-8');
+              const trxMatch = trxContent.match(/total="(\d+)" passed="(\d+)" failed="(\d+)"/);
+              if (trxMatch) {
+                totalTests += parseInt(trxMatch[1]);
+                passedCount += parseInt(trxMatch[2]);
+                failedCount += parseInt(trxMatch[3]);
               }
             }
             
-            const facts = {
+            const coverageData = {
               lineRate: linePct,
               branchRate: branchPct,
               threshold,
               pass,
-              tests: { total, passed, failed },
+              tests: { total: totalTests, passed: passedCount, failed: failedCount },
               generatedAt: new Date().toISOString()
             };
             
             // Call NVIDIA NIM API for analysis
             if (process.env.NVIDIA_API_KEY) {
-              const res = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
+              const apiResponse = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
                 method: 'POST',
                 headers: {
                   'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}`,
@@ -206,34 +206,34 @@ jobs:
                   stream: false,
                   messages: [
                     { role: 'system', content: 'You are a CI coverage analyst. Produce a Markdown report with a coverage table (line %, branch %, threshold, pass/fail), a test summary, and concrete remediation suggestions where coverage is low.' },
-                    { role: 'user', content: JSON.stringify(facts) }
+                    { role: 'user', content: JSON.stringify(coverageData) }
                   ]
                 })
               });
               
-              if (!res.ok) {
-                const errText = await res.text();
-                core.setFailed(`NVIDIA NIM ${res.status}: ${errText.slice(0, 500)}`);
+              if (!apiResponse.ok) {
+                const errorText = await apiResponse.text();
+                githubCore.setFailed(`NVIDIA NIM ${apiResponse.status}: ${errorText.slice(0, 500)}`);
                 return;
               }
               
-              const data = await res.json();
-              const modelText = data.choices?.[0]?.message?.content?.trim() || '';
-              const summary = {
+              const apiData = await apiResponse.json();
+              const modelReport = apiData.choices?.[0]?.message?.content?.trim() || '';
+              const coverageSummary = {
                 coverage: { lineRate: linePct, branchRate: branchPct, threshold, pass },
-                tests: { total, passed, failed },
-                timestamp: facts.generatedAt,
+                tests: { total: totalTests, passed: passedCount, failed: failedCount },
+                timestamp: coverageData.generatedAt,
                 model: 'meta/llama-3.3-70b-instruct',
-                report: modelText
+                report: modelReport
               };
               
-              fs.writeFileSync('coverage-summary.json', JSON.stringify(summary, null, 2));
-              fs.writeFileSync('coverage-report.md', modelText);
+              fs.writeFileSync('coverage-summary.json', JSON.stringify(coverageSummary, null, 2));
+              fs.writeFileSync('coverage-report.md', modelReport);
             }
             
-            core.setOutput('coverage_pass', String(pass));
-            core.setOutput('line_rate', linePct);
-            core.setOutput('branch_rate', branchPct);
+            githubCore.setOutput('coverage_pass', String(pass));
+            githubCore.setOutput('line_rate', linePct);
+            githubCore.setOutput('branch_rate', branchPct);
 
       - name: Upload coverage summary
         uses: actions/upload-artifact@v4
@@ -245,7 +245,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Fail build if coverage below threshold
-        if: steps.coverage-analysis.outputs.coverage_pass != 'true'
+        if: steps.analyze_coverage.outputs.coverage_pass != 'true'
         run: |
           echo "::error::Coverage below ${{ env.COVERAGE_THRESHOLD }}% threshold"
           exit 1
@@ -281,17 +281,18 @@ jobs:
           path: trivy-report.json
           if-no-files-found: error
 
-      - name: Trivy Security Agent (NVIDIA NIM)
+      - name: Analyze Security Findings with AI (NVIDIA NIM)
+        id: analyze_security
         if: env.NVIDIA_API_KEY != ''
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
-            const core = require('@actions/core');
+            const githubCore = require('@actions/core');
             const reportRaw = fs.existsSync('trivy-report.json') ? fs.readFileSync('trivy-report.json', 'utf-8') : null;
             
             if (!reportRaw) {
-              core.setFailed('Trivy report not found');
+              githubCore.setFailed('Trivy report not found');
               return;
             }
             
@@ -307,13 +308,13 @@ jobs:
               }
             }
             
-            const facts = {
+            const securityData = {
               counts,
               sample,
               generatedAt: new Date().toISOString()
             };
             
-            const res = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
+            const apiResponse = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
               method: 'POST',
               headers: {
                 'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}`,
@@ -328,21 +329,21 @@ jobs:
                 stream: false,
                 messages: [
                   { role: 'system', content: 'You are a security analyst. Given a Trivy JSON report summary (counts and sample findings), write a concise Markdown summary.' },
-                  { role: 'user', content: JSON.stringify(facts) }
+                  { role: 'user', content: JSON.stringify(securityData) }
                 ]
               })
             });
             
-            if (!res.ok) {
-              const errText = await res.text();
-              core.setFailed(`NVIDIA NIM ${res.status}: ${errText.slice(0, 500)}`);
+            if (!apiResponse.ok) {
+              const errorText = await apiResponse.text();
+              githubCore.setFailed(`NVIDIA NIM ${apiResponse.status}: ${errorText.slice(0, 500)}`);
               return;
             }
             
-            const llm = await res.json();
-            const modelText = llm.choices?.[0]?.message?.content?.trim() || '';
-            fs.writeFileSync('trivy-summary.md', modelText);
-            fs.writeFileSync('trivy-summary.json', JSON.stringify({ counts: facts.counts, sample: facts.sample, timestamp: facts.generatedAt, model: 'nvidia/llama-3.1-nemotron-ultra-253b-v1' }, null, 2));
+            const llmResponse = await apiResponse.json();
+            const modelReport = llmResponse.choices?.[0]?.message?.content?.trim() || '';
+            fs.writeFileSync('trivy-summary.md', modelReport);
+            fs.writeFileSync('trivy-summary.json', JSON.stringify({ counts: securityData.counts, sample: securityData.sample, timestamp: securityData.generatedAt, model: 'nvidia/llama-3.1-nemotron-ultra-253b-v1' }, null, 2));
 
       - name: Upload Trivy summary
         uses: actions/upload-artifact@v4
@@ -394,7 +395,8 @@ jobs:
         with:
           category: "/language:${{ matrix.language }}"
 
-      - name: Security Analysis Agent (NVIDIA NIM)
+      - name: Analyze CodeQL Results with AI (NVIDIA NIM)
+        id: analyze_codeql
         uses: actions/github-script@v7
         if: always() && env.NVIDIA_API_KEY != ''
         with:
@@ -402,10 +404,10 @@ jobs:
             const fs = require('fs');
             const path = require('path');
             const { execSync } = require('child_process');
-            const core = require('@actions/core');
+            const githubCore = require('@actions/core');
             const sarifDir = execSync('find . -name "*.sarif"', { encoding: 'utf8' }).trim();
             
-            let critical = 0, medium = 0, low = 0;
+            let criticalCount = 0, mediumCount = 0, lowCount = 0;
             const sampleFindings = [];
             
             for (const f of sarifDir.split('\n').filter(Boolean)) {
@@ -413,9 +415,9 @@ jobs:
               for (const run of sarif.runs || []) {
                 for (const result of run.results || []) {
                   const level = result.level || 'warning';
-                  if (level === 'error') critical++;
-                  else if (level === 'warning') medium++;
-                  else low++;
+                  if (level === 'error') criticalCount++;
+                  else if (level === 'warning') mediumCount++;
+                  else lowCount++;
                   if (sampleFindings.length < 3) {
                     sampleFindings.push({
                       ruleId: result.ruleId,
@@ -427,16 +429,16 @@ jobs:
               }
             }
             
-            const facts = {
-              critical,
-              medium,
-              low,
-              riskScore: critical * 10 + medium * 3 + low,
+            const codeqlData = {
+              critical: criticalCount,
+              medium: mediumCount,
+              low: lowCount,
+              riskScore: criticalCount * 10 + mediumCount * 3 + lowCount,
               sampleFindings,
               generatedAt: new Date().toISOString()
             };
             
-            const res = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
+            const apiResponse = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
               method: 'POST',
               headers: {
                 'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}`,
@@ -451,31 +453,31 @@ jobs:
                 stream: false,
                 messages: [
                   { role: 'system', content: 'You are a security analyst. Given a CodeQL severity tally and findings, write a Markdown report.' },
-                  { role: 'user', content: JSON.stringify(facts) }
+                  { role: 'user', content: JSON.stringify(codeqlData) }
                 ]
               })
             });
             
-            if (!res.ok) {
-              const errText = await res.text();
-              core.setFailed(`CodeQL Analysis ${res.status}: ${errText.slice(0, 500)}`);
+            if (!apiResponse.ok) {
+              const errorText = await apiResponse.text();
+              githubCore.setFailed(`CodeQL Analysis ${apiResponse.status}: ${errorText.slice(0, 500)}`);
               return;
             }
             
-            const llm = await res.json();
-            const modelText = llm.choices?.[0]?.message?.content?.trim() || '';
+            const llmResponse = await apiResponse.json();
+            const modelReport = llmResponse.choices?.[0]?.message?.content?.trim() || '';
             const summary = {
-              critical,
-              medium,
-              low,
-              riskScore: facts.riskScore,
-              timestamp: facts.generatedAt,
+              critical: criticalCount,
+              medium: mediumCount,
+              low: lowCount,
+              riskScore: codeqlData.riskScore,
+              timestamp: codeqlData.generatedAt,
               model: 'nvidia/llama-3.3-nemotron-super-49b-v1.5',
               sampleFindings,
-              report: modelText
+              report: modelReport
             };
             
-            fs.writeFileSync('security-analysis.md', modelText);
+            fs.writeFileSync('security-analysis.md', modelReport);
             fs.writeFileSync('security-analysis.json', JSON.stringify(summary, null, 2));
 
       - name: Upload security analysis
