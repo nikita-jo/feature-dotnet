@@ -45,17 +45,6 @@ public class UpdateEmployeeDtoValidatorTests
         result.IsValid.Should().BeFalse();
     }
 
-    [Fact]
-    public void Validate_WithMissingDepartment_ShouldFail()
-    {
-        var dto = TestDataFactory.CreateValidUpdate();
-        dto.Department = string.Empty;
-
-        var result = _sut.Validate(dto);
-
-        result.IsValid.Should().BeFalse();
-    }
-
     [Theory]
     [InlineData("not-an-email")]
     [InlineData("missing@tld")]

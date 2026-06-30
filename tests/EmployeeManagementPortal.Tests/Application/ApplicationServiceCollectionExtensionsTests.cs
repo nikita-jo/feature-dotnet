@@ -1,4 +1,5 @@
 using EmployeeManagementPortal.Application;
+using EmployeeManagementPortal.Application.DTOs;
 using EmployeeManagementPortal.Application.Interfaces;
 using EmployeeManagementPortal.Application.Services;
 using EmployeeManagementPortal.Application.Validators;
