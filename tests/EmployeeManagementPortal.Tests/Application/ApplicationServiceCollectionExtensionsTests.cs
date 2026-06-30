@@ -5,6 +5,7 @@ using EmployeeManagementPortal.Application.Services;
 using EmployeeManagementPortal.Application.Validators;
 using FluentValidation;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace EmployeeManagementPortal.Tests.Application;
 
@@ -20,6 +21,11 @@ public class ApplicationServiceCollectionExtensionsTests
         var services = new ServiceCollection();
 
         services.AddApplicationServices();
+        // EmployeeService depends on IEmployeeRepository (Infrastructure) and
+        // ILogger<EmployeeService> (host-provided). The Application layer doesn't
+        // own either, so substitute stubs to validate its own wiring in isolation.
+        services.AddSingleton(Mock.Of<IEmployeeRepository>());
+        services.AddSingleton(NullLogger<EmployeeService>.Instance);
 
         using var provider = services.BuildServiceProvider();
         var service = provider.GetRequiredService<IEmployeeService>();

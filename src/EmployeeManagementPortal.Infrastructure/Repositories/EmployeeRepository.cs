@@ -30,7 +30,9 @@ public sealed class EmployeeRepository : IEmployeeRepository
         var normalized = email.Trim().ToLowerInvariant();
         return _dbContext.Employees
             .AsNoTracking()
-            .FirstOrDefaultAsync(e => e.Email == normalized, cancellationToken);
+            .FirstOrDefaultAsync(
+                e => e.Email != null && e.Email.ToLower() == normalized,
+                cancellationToken);
     }
 
     public Task<Employee?> GetByEmployeeCodeAsync(string employeeCode, CancellationToken cancellationToken = default)
