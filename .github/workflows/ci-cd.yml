@@ -363,6 +363,17 @@ jobs:
           languages: ${{ matrix.language }}
           queries: security-and-quality
 
+      - name: Setup .NET ${{ env.DOTNET_VERSION }}
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore dependencies
+        run: dotnet restore ${{ env.SOLUTION }}
+
+      - name: Build solution
+        run: dotnet build ${{ env.SOLUTION }} --no-restore --configuration Debug
+
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
         with:
