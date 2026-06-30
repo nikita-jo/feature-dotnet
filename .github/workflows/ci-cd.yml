@@ -164,12 +164,14 @@ jobs:
             const pass = parseFloat(linePct) >= threshold;
 
             const trxFiles = require('child_process').execSync('find . -name "*.trx"', { encoding: 'utf8' }).trim().split('\n').filter(Boolean);
-            let failed = 0, total = 0;
+            let failed = 0, total = 0, passed = 0;
             for (const f of trxFiles) {
               const c = fs.readFileSync(f, 'utf-8');
               const m = c.match(/total="(\d+)" passed="(\d+)" failed="(\d+)"/);
               if (m) {
-                total += parseInt(m[1]); passed += parseInt(m[2]); failed += parseInt(m[3]);
+                total += parseInt(m[1]);
+                passed += parseInt(m[2]);
+                failed += parseInt(m[3]);
               }
             }
 
