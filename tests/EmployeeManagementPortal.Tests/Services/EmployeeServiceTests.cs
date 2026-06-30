@@ -16,7 +16,7 @@ public class EmployeeServiceTests
     private readonly Mock<IEmployeeRepository> _repo = new(MockBehavior.Strict);
     private readonly CreateEmployeeDtoValidator _createValidator = new();
     private readonly UpdateEmployeeDtoValidator _updateValidator = new();
-    private readonly TimeProvider _timeProvider = FakeTimeProvider.Create();
+    private readonly TimeProvider _timeProvider = new FakeTimeProvider(new DateTimeOffset(2024, 1, 15, 12, 0, 0, TimeSpan.Zero));
     private readonly EmployeeService _sut;
 
     public EmployeeServiceTests()
