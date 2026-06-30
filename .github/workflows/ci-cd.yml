@@ -11,7 +11,6 @@ env:
   SOLUTION: EmployeeManagementPortal.sln
   TEST_PROJECT: tests/EmployeeManagementPortal.Tests/EmployeeManagementPortal.Tests.csproj
   COVERAGE_THRESHOLD: 85
-  # NVIDIA_API_KEY can be used by optional LLM-agent steps. Remove or leave empty to skip those calls.
 
 permissions:
   contents: read
@@ -21,9 +20,7 @@ permissions:
   actions: read
 
 jobs:
-  # ----------------------------------------------------------------------
-  # Stage 1: Build
-  # ----------------------------------------------------------------------
+  # Build Stage
   build:
     name: 1. Build
     runs-on: ubuntu-latest
@@ -63,6 +60,7 @@ jobs:
           echo "- **Commit**: ${{ github.sha }}" >> build-summary.md
           echo "- **Version**: ${{ steps.publish.outputs.version }}" >> build-summary.md
           echo "- **Triggered by**: ${{ github.actor }}" >> build-summary.md
+
       - name: Publish build artifact
         uses: actions/upload-artifact@v4
         with:
@@ -70,9 +68,7 @@ jobs:
           path: build-summary.md
           if-no-files-found: warn
 
-  # ----------------------------------------------------------------------
-  # Stage 2: Test + Coverage Analysis
-  # ----------------------------------------------------------------------
+  # Test & Coverage Stage
   test:
     name: 2. Test + Coverage
     needs: build
@@ -109,6 +105,7 @@ jobs:
           --results-directory ./coverage
           -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=cobertura,opencover
           --logger "trx;LogFileName=test-results.trx"
+
       - name: Convert coverage to Cobertura + OpenCover
         run: |
           ls -la coverage
@@ -122,6 +119,7 @@ jobs:
             echo "::error::OpenCover report not generated"
             exit 1
           fi
+
       - name: Generate HTML coverage report
         run: |
           dotnet tool install -g dotnet-reportgenerator-globaltool
@@ -130,6 +128,7 @@ jobs:
             -targetdir:coverage-report \
             -reporttypes:Html \
             -assemblyfilters:-EmployeeManagementPortal.Web
+
       - name: Publish coverage artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -155,6 +154,8 @@ jobs:
           script: |
             const fs = require('fs');
             const core = require('@actions/core');
+            
+            // Parse coverage report
             const cobertura = fs.readFileSync('coverage.cobertura.xml', 'utf-8');
             const coverageMatch = cobertura.match(/line-rate="([0-9.]+)"/);
             const branchMatch = cobertura.match(/branch-rate="([0-9.]+)"/);
@@ -164,6 +165,8 @@ jobs:
             const branchPct = (branchRate * 100).toFixed(2);
             const threshold = parseFloat('${{ env.COVERAGE_THRESHOLD }}');
             const pass = parseFloat(linePct) >= threshold;
+            
+            // Parse test results
             const trxFiles = require('child_process').execSync('find . -name "*.trx"', { encoding: 'utf8' }).trim().split('\n').filter(Boolean);
             let failed = 0, total = 0, passed = 0;
             for (const f of trxFiles) {
@@ -175,50 +178,62 @@ jobs:
                 failed += parseInt(m[3]);
               }
             }
+            
             const facts = {
-              lineRate: linePct, branchRate: branchPct, threshold,
-              pass, tests: { total, passed, failed },
+              lineRate: linePct,
+              branchRate: branchPct,
+              threshold,
+              pass,
+              tests: { total, passed, failed },
               generatedAt: new Date().toISOString()
             };
-            // Optional: ask model to write the human-facing Markdown (skipped if no API key).
-            const res = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
-              method: 'POST',
-              headers: {
-                'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}`,
-                'Content-Type': 'application/json',
-                'Accept': 'application/json'
-              },
-              body: JSON.stringify({
+            
+            // Call NVIDIA NIM API for analysis
+            if (process.env.NVIDIA_API_KEY) {
+              const res = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}`,
+                  'Content-Type': 'application/json',
+                  'Accept': 'application/json'
+                },
+                body: JSON.stringify({
+                  model: 'meta/llama-3.3-70b-instruct',
+                  temperature: 0.1,
+                  top_p: 0.9,
+                  max_tokens: 2048,
+                  stream: false,
+                  messages: [
+                    { role: 'system', content: 'You are a CI coverage analyst. Produce a Markdown report with a coverage table (line %, branch %, threshold, pass/fail), a test summary, and concrete remediation suggestions where coverage is low.' },
+                    { role: 'user', content: JSON.stringify(facts) }
+                  ]
+                })
+              });
+              
+              if (!res.ok) {
+                const errText = await res.text();
+                core.setFailed(`NVIDIA NIM ${res.status}: ${errText.slice(0, 500)}`);
+                return;
+              }
+              
+              const data = await res.json();
+              const modelText = data.choices?.[0]?.message?.content?.trim() || '';
+              const summary = {
+                coverage: { lineRate: linePct, branchRate: branchPct, threshold, pass },
+                tests: { total, passed, failed },
+                timestamp: facts.generatedAt,
                 model: 'meta/llama-3.3-70b-instruct',
-                temperature: 0.1,
-                top_p: 0.9,
-                max_tokens: 2048,
-                stream: false,
-                messages: [
-                  { role: 'system', content: 'You are a CI coverage analyst. Produce a Markdown report with a coverage table (line %, branch %, threshold, pass/fail), a test summary, and concrete remediation suggestions where coverage is low.' },
-                  { role: 'user', content: JSON.stringify(facts) }
-                ]
-              })
-            });
-            if (!res.ok) {
-              const errText = await res.text();
-              core.setFailed(`NVIDIA NIM ${res.status}: ${errText.slice(0, 500)}`);
-              return;
+                report: modelText
+              };
+              
+              fs.writeFileSync('coverage-summary.json', JSON.stringify(summary, null, 2));
+              fs.writeFileSync('coverage-report.md', modelText);
             }
-            const data = await res.json();
-            const modelText = data.choices?.[0]?.message?.content?.trim() || '';
-            const summary = {
-              coverage: { lineRate: linePct, branchRate: branchPct, threshold, pass },
-              tests: { total, passed, failed },
-              timestamp: facts.generatedAt,
-              model: 'meta/llama-3.3-70b-instruct',
-              report: modelText
-            };
-            fs.writeFileSync('coverage-summary.json', JSON.stringify(summary, null, 2));
-            fs.writeFileSync('coverage-report.md', modelText);
+            
             core.setOutput('coverage_pass', String(pass));
             core.setOutput('line_rate', linePct);
             core.setOutput('branch_rate', branchPct);
+
       - name: Upload coverage summary
         uses: actions/upload-artifact@v4
         with:
@@ -226,7 +241,7 @@ jobs:
           path: |
             coverage-report.md
             coverage-summary.json
-          if-no-files-found: error
+          if-no-files-found: warn
 
       - name: Fail build if coverage below threshold
         if: steps.coverage-analysis.outputs.coverage_pass != 'true'
@@ -234,9 +249,7 @@ jobs:
           echo "::error::Coverage below ${{ env.COVERAGE_THRESHOLD }}% threshold"
           exit 1
 
-  # ----------------------------------------------------------------------
-  # Stage 3: Trivy Scan
-  # ----------------------------------------------------------------------
+  # Trivy Scan Stage
   trivy:
     name: 3. Trivy Scan
     needs: test
@@ -275,14 +288,16 @@ jobs:
             const fs = require('fs');
             const core = require('@actions/core');
             const reportRaw = fs.existsSync('trivy-report.json') ? fs.readFileSync('trivy-report.json', 'utf-8') : null;
+            
             if (!reportRaw) {
               core.setFailed('Trivy report not found');
               return;
             }
+            
             const report = JSON.parse(reportRaw);
-            // tally severities
             const counts = { CRITICAL: 0, HIGH: 0, MEDIUM: 0 };
             const sample = [];
+            
             for (const result of report.Results || []) {
               for (const vuln of result.Vulnerabilities || []) {
                 const sev = (vuln.Severity || 'UNKNOWN').toUpperCase();
@@ -290,11 +305,13 @@ jobs:
                 if (sample.length < 5) sample.push({ target: result.Target, vulnID: vuln.VulnerabilityID, pkg: vuln.PkgName, severity: sev, title: vuln.Title });
               }
             }
+            
             const facts = {
               counts,
               sample,
               generatedAt: new Date().toISOString()
             };
+            
             const res = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
               method: 'POST',
               headers: {
@@ -309,20 +326,23 @@ jobs:
                 max_tokens: 1024,
                 stream: false,
                 messages: [
-                  { role: 'system', content: 'You are a security analyst. Given a Trivy JSON report summary (counts and sample findings), write a concise Markdown summary that names high/critical vulnerabilities and suggests remediation.' },
+                  { role: 'system', content: 'You are a security analyst. Given a Trivy JSON report summary (counts and sample findings), write a concise Markdown summary.' },
                   { role: 'user', content: JSON.stringify(facts) }
                 ]
               })
             });
+            
             if (!res.ok) {
               const errText = await res.text();
               core.setFailed(`NVIDIA NIM ${res.status}: ${errText.slice(0, 500)}`);
               return;
             }
+            
             const llm = await res.json();
             const modelText = llm.choices?.[0]?.message?.content?.trim() || '';
             fs.writeFileSync('trivy-summary.md', modelText);
-            fs.writeFileSync('trivy-summary.json', JSON.stringify({ counts: facts.counts, sample: facts.sample, timestamp: facts.generatedAt, model: 'nvidia/llama-3.1-nemotron-ultra-253b-v1', report: modelText }, null, 2));
+            fs.writeFileSync('trivy-summary.json', JSON.stringify({ counts: facts.counts, sample: facts.sample, timestamp: facts.generatedAt, model: 'nvidia/llama-3.1-nemotron-ultra-253b-v1' }, null, 2));
+
       - name: Upload Trivy summary
         uses: actions/upload-artifact@v4
         with:
@@ -330,11 +350,9 @@ jobs:
           path: |
             trivy-summary.md
             trivy-summary.json
-          if-no-files-found: error
+          if-no-files-found: warn
 
-  # ----------------------------------------------------------------------
-  # Stage 4: CodeQL Security Scan
-  # ----------------------------------------------------------------------
+  # CodeQL Scan Stage
   codeql:
     name: 4. CodeQL Scan
     needs: test
@@ -384,8 +402,10 @@ jobs:
             const path = require('path');
             const core = require('@actions/core');
             const sarifDir = require('child_process').execSync('find . -name "*.sarif"', { encoding: 'utf8' }).trim();
+            
             let critical = 0, medium = 0, low = 0;
             const sampleFindings = [];
+            
             for (const f of sarifDir.split('\n').filter(Boolean)) {
               const sarif = JSON.parse(fs.readFileSync(f, 'utf-8'));
               for (const run of sarif.runs || []) {
@@ -404,12 +424,16 @@ jobs:
                 }
               }
             }
+            
             const facts = {
-              critical, medium, low,
+              critical,
+              medium,
+              low,
               riskScore: critical * 10 + medium * 3 + low,
               sampleFindings,
               generatedAt: new Date().toISOString()
             };
+            
             const res = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
               method: 'POST',
               headers: {
@@ -424,28 +448,34 @@ jobs:
                 max_tokens: 2048,
                 stream: false,
                 messages: [
-                  { role: 'system', content: 'You are a security analyst. Given a CodeQL severity tally and short sample findings, write a Markdown report with severity table, a 1-2 sentence description of overall risk, and specific remediation steps.' },
+                  { role: 'system', content: 'You are a security analyst. Given a CodeQL severity tally and findings, write a Markdown report.' },
                   { role: 'user', content: JSON.stringify(facts) }
                 ]
               })
             });
+            
             if (!res.ok) {
               const errText = await res.text();
               core.setFailed(`CodeQL Analysis ${res.status}: ${errText.slice(0, 500)}`);
               return;
             }
+            
             const llm = await res.json();
             const modelText = llm.choices?.[0]?.message?.content?.trim() || '';
             const summary = {
-              critical, medium, low,
+              critical,
+              medium,
+              low,
               riskScore: facts.riskScore,
               timestamp: facts.generatedAt,
               model: 'nvidia/llama-3.3-nemotron-super-49b-v1.5',
               sampleFindings,
               report: modelText
             };
+            
             fs.writeFileSync('security-analysis.md', modelText);
             fs.writeFileSync('security-analysis.json', JSON.stringify(summary, null, 2));
+
       - name: Upload security analysis
         uses: actions/upload-artifact@v4
         if: always()
@@ -456,9 +486,7 @@ jobs:
             security-analysis.json
           if-no-files-found: warn
 
-  # ----------------------------------------------------------------------
-  # Stage 5: Deploy
-  # ----------------------------------------------------------------------
+  # Deploy Stage
   deploy:
     name: 5. Deploy
     needs: [build, test, trivy, codeql]
@@ -490,12 +518,14 @@ jobs:
             -c Release \
             -o ./publish \
             --no-restore
+
       - name: Create deployment package
         run: |
           cd publish
           zip -r ../app.zip . -x "*.pdb"
           cd ..
           ls -la app.zip
+
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
@@ -530,6 +560,7 @@ jobs:
           App Service: employee-management-portal
           Deployment status: 4 (Success)
           EOF
+
       - name: Upload deployment artifacts
         uses: actions/upload-artifact@v4
         with:
