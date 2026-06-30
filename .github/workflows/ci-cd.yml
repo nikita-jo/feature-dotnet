@@ -149,6 +149,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Coverage Analysis Agent
+        id: coverage-analysis
         uses: actions/github-script@v7
         with:
           script: |
@@ -220,7 +221,7 @@ jobs:
           if-no-files-found: error
 
       - name: Fail build if coverage below threshold
-        if: steps.coverage.outputs.coverage_pass != 'true'
+        if: steps.coverage-analysis.outputs.coverage_pass != 'true'
         run: |
           echo "::error::Coverage below ${{ env.COVERAGE_THRESHOLD }}% threshold"
           exit 1
