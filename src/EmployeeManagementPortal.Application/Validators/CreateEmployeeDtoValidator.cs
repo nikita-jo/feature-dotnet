@@ -1,5 +1,6 @@
 using EmployeeManagementPortal.Application.DTOs;
 using FluentValidation;
+using FluentValidation.Validators;
 
 namespace EmployeeManagementPortal.Application.Validators;
 
