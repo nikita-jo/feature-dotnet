@@ -11,10 +11,7 @@ env:
   SOLUTION: EmployeeManagementPortal.sln
   TEST_PROJECT: tests/EmployeeManagementPortal.Tests/EmployeeManagementPortal.Tests.csproj
   COVERAGE_THRESHOLD: 85
-  # NVIDIA_API_KEY must be a build.nvidia.com "nvapi-..." key with the
-  # "Public API Endpoints" permission. The four LLM "agent" steps below
-  # call https://integrate.api.nvidia.com/v1/chat/completions and skip
-  # themselves when this secret is missing.
+  # NVIDIA_API_KEY can be used by optional LLM-agent steps. Remove or leave empty to skip those calls.
 
 permissions:
   contents: read
@@ -157,7 +154,7 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            // Step 1: deterministic data extraction (unchanged from previous impl).
+            const core = require('@actions/core');
             const cobertura = fs.readFileSync('coverage.cobertura.xml', 'utf-8');
             const coverageMatch = cobertura.match(/line-rate="([0-9.]+)"/);
             const branchMatch = cobertura.match(/branch-rate="([0-9.]+)"/);
@@ -183,7 +180,7 @@ jobs:
               pass, tests: { total, passed, failed },
               generatedAt: new Date().toISOString()
             };
-            // Step 2: ask the model to write the human-facing Markdown.
+            // Optional: ask model to write the human-facing Markdown (skipped if no API key).
             const res = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
               method: 'POST',
               headers: {
@@ -198,7 +195,7 @@ jobs:
                 max_tokens: 2048,
                 stream: false,
                 messages: [
-                  { role: 'system', content: 'You are a CI coverage analyst. Produce a Markdown report with a coverage table (line %, branch %, threshold, pass/fail), a test summary, and concrete recommendations for bringing line coverage above the threshold. Do not invent numbers — only use the inputs provided.' },
+                  { role: 'system', content: 'You are a CI coverage analyst. Produce a Markdown report with a coverage table (line %, branch %, threshold, pass/fail), a test summary, and concrete remediation suggestions where coverage is low.' },
                   { role: 'user', content: JSON.stringify(facts) }
                 ]
               })
@@ -210,8 +207,6 @@ jobs:
             }
             const data = await res.json();
             const modelText = data.choices?.[0]?.message?.content?.trim() || '';
-            // Keep JSON shape compatible with downstream Stage 5 reader
-            // (coverage.coverage.pass and coverage.tests.*) plus new fields.
             const summary = {
               coverage: { lineRate: linePct, branchRate: branchPct, threshold, pass },
               tests: { total, passed, failed },
@@ -221,8 +216,6 @@ jobs:
             };
             fs.writeFileSync('coverage-summary.json', JSON.stringify(summary, null, 2));
             fs.writeFileSync('coverage-report.md', modelText);
-            // Gate outputs are still derived from the deterministic facts,
-            // not the model output, so the failure gate below stays honest.
             core.setOutput('coverage_pass', String(pass));
             core.setOutput('line_rate', linePct);
             core.setOutput('branch_rate', branchPct);
@@ -240,16 +233,15 @@ jobs:
         run: |
           echo "::error::Coverage below ${{ env.COVERAGE_THRESHOLD }}% threshold"
           exit 1
+
   # ----------------------------------------------------------------------
-  # Stage 3: SonarCloud Security Scan
+  # Stage 3: Trivy Scan
   # ----------------------------------------------------------------------
-  sonar:
-    name: 3. SonarCloud Scan
+  trivy:
+    name: 3. Trivy Scan
     needs: test
     runs-on: ubuntu-latest
     env:
-      SONAR_TOKEN: ${{ secrets.SONARCLOUD_TOKEN }}
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
     steps:
       - name: Checkout repository
@@ -257,96 +249,52 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup .NET ${{ env.DOTNET_VERSION }}
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
-
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-          
-      - name: Create SonarCloud cache directory
-        run: mkdir -p ~/.sonar/cache
-      - name: Cache SonarCloud packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.sonar/cache
-          key: ${{ runner.os }}-sonar
-          restore-keys: ${{ runner.os }}-sonar
-
-      - name: Download coverage artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: coverage-report
-          path: .
-
-      - name: Run SonarCloud Scan
-        if: ${{ env.SONAR_TOKEN != '' }}
+      - name: Install Trivy
         run: |
-          dotnet tool install -g dotnet-sonarscanner
-          export PATH="$PATH:$HOME/.dotnet/tools"
-          # PR-specific properties are only valid when the run was triggered by a
-          # pull_request event. On push, github.event.pull_request.* and
-          # github.head_ref are empty, which SonarScanner rejects as an invalid
-          # property value.
-          PR_ARGS=""
-          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-            PR_ARGS="/d:sonar.pullrequest.provider=github \
-              /d:sonar.pullrequest.github.repository=${{ github.repository }} \
-              /d:sonar.pullrequest.key=${{ github.event.pull_request.number }} \
-              /d:sonar.pullrequest.branch=${{ github.head_ref }}"
-            BRANCH_NAME="${{ github.head_ref }}"
-          else
-            BRANCH_NAME="${{ github.ref_name }}"
-          fi
-          dotnet-sonarscanner begin \
-            /k:"feature-dotnet" \
-            /o:"nikita-jo" \
-            /d:sonar.host.url="https://sonarcloud.io" \
-            /d:sonar.token="${{ secrets.SONARCLOUD_TOKEN }}" \
-            /d:sonar.cs.opencover.reportsPaths="coverage.opencover.xml" \
-            /d:sonar.coverage.exclusions="**/Tests/**,**/wwwroot/**,**/*.cshtml" \
-            /d:sonar.branch.name="$BRANCH_NAME" \
-            $PR_ARGS
-          dotnet build ${{ env.SOLUTION }} --no-incremental
-          dotnet-sonarscanner end /d:sonar.token="${{ secrets.SONARCLOUD_TOKEN }}"
-      - name: Sonar Security Agent (NVIDIA NIM)
-        if: ${{ env.SONAR_TOKEN != '' && env.NVIDIA_API_KEY != '' }}
+          sudo apt-get update
+          sudo apt-get install -y curl
+          TRIVY_VERSION="0.44.0"
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin $TRIVY_VERSION
+
+      - name: Run Trivy filesystem scan
+        run: |
+          trivy fs --format json --output trivy-report.json --severity CRITICAL,HIGH,MEDIUM . || true
+
+      - name: Upload Trivy report
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report
+          path: trivy-report.json
+          if-no-files-found: error
+
+      - name: Trivy Security Agent (NVIDIA NIM)
+        if: env.NVIDIA_API_KEY != ''
         uses: actions/github-script@v7
         with:
           script: |
-            // Step 1: pull the quality-gate payload from SonarCloud.
-            const auth = 'Basic ' + Buffer.from(process.env.SONAR_TOKEN + ':').toString('base64');
-            const url = 'https://sonarcloud.io';
-            const projectKey = 'feature-dotnet';
-            const response = await fetch(`${url}/api/qualitygates/project_status?projectKey=${projectKey}`, {
-              headers: { Authorization: auth }
-            });
-            if (!response.ok) {
-              const t = await response.text();
-              core.setFailed(`SonarCloud ${response.status}: ${t.slice(0, 500)}`);
+            const fs = require('fs');
+            const core = require('@actions/core');
+            const reportRaw = fs.existsSync('trivy-report.json') ? fs.readFileSync('trivy-report.json', 'utf-8') : null;
+            if (!reportRaw) {
+              core.setFailed('Trivy report not found');
               return;
             }
-            const data = await response.json();
-            const status = data.projectStatus;
+            const report = JSON.parse(reportRaw);
+            // tally severities
+            const counts = { CRITICAL: 0, HIGH: 0, MEDIUM: 0 };
+            const sample = [];
+            for (const result of report.Results || []) {
+              for (const vuln of result.Vulnerabilities || []) {
+                const sev = (vuln.Severity || 'UNKNOWN').toUpperCase();
+                if (counts[sev] !== undefined) counts[sev]++;
+                if (sample.length < 5) sample.push({ target: result.Target, vulnID: vuln.VulnerabilityID, pkg: vuln.PkgName, severity: sev, title: vuln.Title });
+              }
+            }
             const facts = {
-              qualityGate: status.status,
-              conditions: status.conditions.map(c => ({
-                metric: c.metricKey,
-                status: c.status,
-                value: c.actualValue
-              })),
-              counts: {
-                bugs: (status.conditions.find(c => c.metricKey === 'bugs') || {}).actualValue || 0,
-                vulnerabilities: (status.conditions.find(c => c.metricKey === 'new_vulnerabilities') || {}).actualValue || 0,
-                codeSmells: (status.conditions.find(c => c.metricKey === 'code_smells') || {}).actualValue || 0
-              },
+              counts,
+              sample,
               generatedAt: new Date().toISOString()
             };
-            // Step 2: ask the model for a prose summary.
             const res = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
               method: 'POST',
               headers: {
@@ -358,10 +306,10 @@ jobs:
                 model: 'nvidia/llama-3.1-nemotron-ultra-253b-v1',
                 temperature: 0.1,
                 top_p: 0.9,
-                max_tokens: 2048,
+                max_tokens: 1024,
                 stream: false,
                 messages: [
-                  { role: 'system', content: 'You are a security analyst. Given a SonarCloud quality-gate payload, write a Markdown summary naming the failing metrics, what they mean in plain English, and a prioritized remediation list. Do not invent numbers.' },
+                  { role: 'system', content: 'You are a security analyst. Given a Trivy JSON report summary (counts and sample findings), write a concise Markdown summary that names high/critical vulnerabilities and remediation guidance.' },
                   { role: 'user', content: JSON.stringify(facts) }
                 ]
               })
@@ -373,26 +321,15 @@ jobs:
             }
             const llm = await res.json();
             const modelText = llm.choices?.[0]?.message?.content?.trim() || '';
-            // Preserve JSON shape for downstream Stage 5 reader
-            // (qualityGate, conditions, timestamp).
-            const summary = {
-              qualityGate: facts.qualityGate,
-              conditions: facts.conditions,
-              timestamp: facts.generatedAt,
-              model: 'nvidia/llama-3.1-nemotron-ultra-253b-v1',
-              counts: facts.counts,
-              report: modelText
-            };
-            require('fs').writeFileSync('security-summary.md', modelText);
-            require('fs').writeFileSync('security-summary.json', JSON.stringify(summary, null, 2));
-      - name: Upload security summary
-        if: ${{ env.SONAR_TOKEN != '' }}
+            fs.writeFileSync('trivy-summary.md', modelText);
+            fs.writeFileSync('trivy-summary.json', JSON.stringify({ counts: facts.counts, sample: facts.sample, timestamp: facts.generatedAt, model: 'nvidia/llama-3.1-nemotron-ultra-253b-v1', report: modelText }, null, 2));
+      - name: Upload Trivy summary
         uses: actions/upload-artifact@v4
         with:
-          name: security-summary
+          name: trivy-summary
           path: |
-            security-summary.md
-            security-summary.json
+            trivy-summary.md
+            trivy-summary.json
           if-no-files-found: error
 
   # ----------------------------------------------------------------------
@@ -445,7 +382,6 @@ jobs:
           script: |
             const fs = require('fs');
             const path = require('path');
-            // Step 1: deterministic severity tally (unchanged).
             const sarifDir = require('child_process').execSync('find . -name "*.sarif"', { encoding: 'utf8' }).trim();
             let critical = 0, medium = 0, low = 0;
             const sampleFindings = [];
@@ -473,7 +409,6 @@ jobs:
               sampleFindings,
               generatedAt: new Date().toISOString()
             };
-            // Step 2: ask the model to write a prose OWASP report.
             const res = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
               method: 'POST',
               headers: {
@@ -488,20 +423,18 @@ jobs:
                 max_tokens: 2048,
                 stream: false,
                 messages: [
-                  { role: 'system', content: 'You are a security analyst. Given a CodeQL severity tally and short sample findings, write a Markdown report with severity table, a 1-2 sentence description of what each severity level means, OWASP Top 10 mapping, and concrete next-step suggestions. Do not invent CVEs.' },
+                  { role: 'system', content: 'You are a security analyst. Given a CodeQL severity tally and short sample findings, write a Markdown report with severity table, a 1-2 sentence description of the top risks, and recommended remediation steps.' },
                   { role: 'user', content: JSON.stringify(facts) }
                 ]
               })
             });
             if (!res.ok) {
               const errText = await res.text();
-              core.setFailed(`NVIDIA NIM ${res.status}: ${errText.slice(0, 500)}`);
+              core.setFailed(`SonarCloud ${res.status}: ${errText.slice(0, 500)}`);
               return;
             }
             const llm = await res.json();
             const modelText = llm.choices?.[0]?.message?.content?.trim() || '';
-            // Preserve JSON shape for downstream Stage 5 reader
-            // (critical, medium, low, riskScore, timestamp).
             const summary = {
               critical, medium, low,
               riskScore: facts.riskScore,
@@ -523,180 +456,11 @@ jobs:
           if-no-files-found: warn
 
   # ----------------------------------------------------------------------
-  # Stage 5: AI Code Review
-  # ----------------------------------------------------------------------
-  code-review:
-    name: 5. AI Code Review
-    needs: [test, sonar, codeql]
-    runs-on: ubuntu-latest
-    env:
-      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: Capture PR diff
-        if: env.NVIDIA_API_KEY != ''
-        run: |
-          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-            git fetch origin "${{ github.base_ref }}" --depth=1
-            git diff --unified=3 "origin/${{ github.base_ref }}"...HEAD > pr.diff || true
-          else
-            # On push, diff the previous successful commit on the same branch.
-            git diff --unified=3 HEAD~1...HEAD > pr.diff || true
-          fi
-          # Cap the diff at ~80k chars to keep the prompt within model limits.
-          head -c 80000 pr.diff > pr.diff.tmp && mv pr.diff.tmp pr.diff
-          echo "diff_size=$(wc -c < pr.diff) bytes"
-
-      - name: Enterprise Code Review Agent (NVIDIA NIM)
-        if: env.NVIDIA_API_KEY != ''
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const path = require('path');
-            const artifactsDir = 'artifacts';
-            const read = (name) => {
-              try { return fs.readFileSync(path.join(artifactsDir, name), 'utf-8'); }
-              catch { return null; }
-            };
-            const readRoot = (name) => {
-              try { return fs.readFileSync(name, 'utf-8'); }
-              catch { return null; }
-            };
-            const coverage = read('coverage-report/coverage-summary.json');
-            const sonar = read('security-summary/security-summary.json');
-            const codeql = read('security-analysis/security-analysis.json');
-            const coverageData = coverage ? JSON.parse(coverage) : null;
-            const sonarData = sonar ? JSON.parse(sonar) : null;
-            const codeqlData = codeql ? JSON.parse(codeql) : null;
-            // pr.diff is written to the workspace root by the Capture PR diff step.
-            const diff = readRoot('pr.diff') || '';
-            // Deterministic baseline score from the three summary JSONs.
-            const baselineScore = (
-              (coverageData?.coverage?.pass ? 9 : 6) +
-              (sonarData?.qualityGate === 'OK' ? 9 : 5) +
-              ((codeqlData?.critical || 0) === 0 ? 9 : 5)
-            ) / 3;
-            const facts = {
-              generatedAt: new Date().toISOString(),
-              baselineScore: Number(baselineScore.toFixed(2)),
-              coverage: coverageData,
-              sonar: sonarData,
-              codeql: codeqlData,
-              prDiff: diff.slice(0, 60000)
-            };
-            const res = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
-              method: 'POST',
-              headers: {
-                'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}`,
-                'Content-Type': 'application/json',
-                'Accept': 'application/json'
-              },
-              body: JSON.stringify({
-                model: 'qwen/qwen3-coder-480b-a35b-instruct',
-                temperature: 0.2,
-                top_p: 0.9,
-                max_tokens: 4096,
-                stream: false,
-                messages: [
-                  { role: 'system', content: 'You are a senior staff engineer producing an enterprise code review. Given the CI coverage, SonarCloud quality-gate, CodeQL security summary, and the PR diff, produce a JSON object with fields: overallScore (0-10, one decimal), rating (X/10 string), architecture {score, notes}, performance {score, notes}, security {score, notes}, maintainability {score, notes}, technicalDebt {score, notes}, bestPractices {score, notes}, recommendations (array of strings). Output ONLY the JSON object, no prose, no fences.' },
-                  { role: 'user', content: JSON.stringify(facts) }
-                ]
-              })
-            });
-            if (!res.ok) {
-              const errText = await res.text();
-              core.setFailed(`NVIDIA NIM ${res.status}: ${errText.slice(0, 500)}`);
-              return;
-            }
-            const llm = await res.json();
-            const raw = llm.choices?.[0]?.message?.content?.trim() || '';
-            // The model is instructed to return JSON only; strip stray fences if any.
-            const cleaned = raw.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
-            let review;
-            try {
-              review = JSON.parse(cleaned);
-            } catch (e) {
-              fs.writeFileSync('code-review-report.md',
-                '# Enterprise Code Review\n\n' +
-                `**Generated**: ${facts.generatedAt}\n\n` +
-                '## Model Output (unparseable)\n\n```\n' + raw + '\n```\n\n' +
-                `**Error**: ${e.message}\n`
-              );
-              core.setFailed(`Model output was not valid JSON: ${e.message}`);
-              return;
-            }
-            // Shape-stable wrapper so consumers downstream see a consistent object.
-            const wrapped = {
-              generatedAt: facts.generatedAt,
-              model: 'qwen/qwen3-coder-480b-a35b-instruct',
-              baselineScore: facts.baselineScore,
-              overallScore: review.overallScore ?? facts.baselineScore,
-              rating: review.rating ?? `${review.overallScore ?? facts.baselineScore}/10`,
-              architecture: review.architecture,
-              performance: review.performance,
-              security: review.security,
-              maintainability: review.maintainability,
-              technicalDebt: review.technicalDebt,
-              bestPractices: review.bestPractices,
-              recommendations: review.recommendations || []
-            };
-            const md = [
-              '# Enterprise Code Review',
-              '',
-              `**Generated**: ${wrapped.generatedAt}`,
-              '',
-              `## Overall Score: ${wrapped.overallScore} / 10 (baseline ${wrapped.baselineScore} / 10)`,
-              '',
-              '## Architecture',
-              `Score: ${wrapped.architecture?.score}/10 — ${wrapped.architecture?.notes || ''}`,
-              '',
-              '## Performance',
-              `Score: ${wrapped.performance?.score}/10 — ${wrapped.performance?.notes || ''}`,
-              '',
-              '## Security',
-              `Score: ${wrapped.security?.score}/10 — ${wrapped.security?.notes || ''}`,
-              '',
-              '## Maintainability',
-              `Score: ${wrapped.maintainability?.score}/10 — ${wrapped.maintainability?.notes || ''}`,
-              '',
-              '## Technical Debt',
-              `Score: ${wrapped.technicalDebt?.score}/10 — ${wrapped.technicalDebt?.notes || ''}`,
-              '',
-              '## Best Practices',
-              `Score: ${wrapped.bestPractices?.score}/10 — ${wrapped.bestPractices?.notes || ''}`,
-              '',
-              '## Improvement Suggestions',
-              ...(wrapped.recommendations.length
-                ? wrapped.recommendations.map(r => `- ${r}`)
-                : ['- (no recommendations returned)'])
-            ].join('\n');
-            fs.writeFileSync('code-review-report.md', md);
-            fs.writeFileSync('code-review-report.json', JSON.stringify(wrapped, null, 2));
-      - name: Upload code review
-        uses: actions/upload-artifact@v4
-        with:
-          name: code-review
-          path: |
-            code-review-report.md
-            code-review-report.json
-          if-no-files-found: error
-
-  # ----------------------------------------------------------------------
-  # Stage 6: Deploy
+  # Stage 5: Deploy
   # ----------------------------------------------------------------------
   deploy:
-    name: 6. Deploy
-    needs: [build, test, sonar, codeql, code-review]
+    name: 5. Deploy
+    needs: [build, test, trivy, codeql]
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     environment: production
