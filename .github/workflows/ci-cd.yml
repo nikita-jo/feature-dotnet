@@ -62,7 +62,6 @@ jobs:
           echo "- **Commit**: ${{ github.sha }}" >> build-summary.md
           echo "- **Version**: ${{ steps.publish.outputs.version }}" >> build-summary.md
           echo "- **Triggered by**: ${{ github.actor }}" >> build-summary.md
-
       - name: Publish build artifact
         uses: actions/upload-artifact@v4
         with:
@@ -107,7 +106,6 @@ jobs:
           --results-directory ./coverage
           -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=cobertura,opencover
           --logger "trx;LogFileName=test-results.trx"
-
       - name: Convert coverage to Cobertura + OpenCover
         run: |
           ls -la coverage
@@ -121,7 +119,6 @@ jobs:
             echo "::error::OpenCover report not generated"
             exit 1
           fi
-
       - name: Generate HTML coverage report
         run: |
           dotnet tool install -g dotnet-reportgenerator-globaltool
@@ -130,7 +127,6 @@ jobs:
             -targetdir:coverage-report \
             -reporttypes:Html \
             -assemblyfilters:-EmployeeManagementPortal.Web
-
       - name: Publish coverage artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -162,7 +158,6 @@ jobs:
             const branchPct = (branchRate * 100).toFixed(2);
             const threshold = parseFloat('${{ env.COVERAGE_THRESHOLD }}');
             const pass = parseFloat(linePct) >= threshold;
-
             const trxFiles = require('child_process').execSync('find . -name "*.trx"', { encoding: 'utf8' }).trim().split('\n').filter(Boolean);
             let failed = 0, total = 0, passed = 0;
             for (const f of trxFiles) {
@@ -174,14 +169,12 @@ jobs:
                 failed += parseInt(m[3]);
               }
             }
-
             const summary = {
               coverage: { lineRate: linePct, branchRate: branchPct, threshold, pass },
               tests: { total, passed, failed },
               timestamp: new Date().toISOString()
             };
             fs.writeFileSync('coverage-summary.json', JSON.stringify(summary, null, 2));
-
             const md = [
               '# Coverage Report',
               '',
@@ -205,11 +198,9 @@ jobs:
               pass ? '- Coverage meets threshold.' : '- Add unit tests to bring coverage above threshold.'
             ].join('\n');
             fs.writeFileSync('coverage-report.md', md);
-
             core.setOutput('coverage_pass', pass);
             core.setOutput('line_rate', linePct);
             core.setOutput('branch_rate', branchPct);
-
       - name: Upload coverage summary
         uses: actions/upload-artifact@v4
         with:
@@ -224,7 +215,6 @@ jobs:
         run: |
           echo "::error::Coverage below ${{ env.COVERAGE_THRESHOLD }}% threshold"
           exit 1
-
   # ----------------------------------------------------------------------
   # Stage 3: SonarQube Security Scan
   # ----------------------------------------------------------------------
@@ -284,7 +274,6 @@ jobs:
             /d:sonar.branch.name=${{ github.head_ref || github.ref_name }}
           dotnet build ${{ env.SOLUTION }} --no-incremental
           dotnet-sonarscanner end /d:sonar.token="${{ secrets.SONAR_TOKEN }}"
-
       - name: Sonar Security Agent
         uses: actions/github-script@v7
         with:
@@ -325,7 +314,6 @@ jobs:
             ].join('\n');
             require('fs').writeFileSync('security-summary.md', md);
             require('fs').writeFileSync('security-summary.json', JSON.stringify(summary, null, 2));
-
       - name: Upload security summary
         uses: actions/upload-artifact@v4
         with:
@@ -415,7 +403,6 @@ jobs:
             ].join('\n');
             fs.writeFileSync('security-analysis.md', md);
             fs.writeFileSync('security-analysis.json', JSON.stringify(summary, null, 2));
-
       - name: Upload security analysis
         uses: actions/upload-artifact@v4
         if: always()
@@ -451,25 +438,21 @@ jobs:
             const fs = require('fs');
             const path = require('path');
             const artifactsDir = 'artifacts';
-
             const read = (name) => {
               try { return fs.readFileSync(path.join(artifactsDir, name), 'utf-8'); }
               catch { return null; }
             };
-
             const coverage = read('coverage-report/coverage-summary.json');
             const sonar = read('security-summary/security-summary.json');
             const codeql = read('security-analysis/security-analysis.json');
             const coverageData = coverage ? JSON.parse(coverage) : null;
             const sonarData = sonar ? JSON.parse(sonar) : null;
             const codeqlData = codeql ? JSON.parse(codeql) : null;
-
             const overallScore = (
               (coverageData?.coverage?.pass ? 9 : 6) +
               (sonarData?.qualityGate === 'OK' ? 9 : 5) +
               ((codeqlData?.critical || 0) === 0 ? 9 : 5)
             ) / 3;
-
             const review = {
               generatedAt: new Date().toISOString(),
               overallScore: overallScore.toFixed(2),
@@ -481,7 +464,6 @@ jobs:
               technicalDebt: { score: 8, notes: 'Minimal duplication; FluentValidation promotes declarative rules.' },
               bestPractices: { score: 9, notes: 'Repository pattern, DI, structured logging, async I/O.' }
             };
-
             const md = [
               '# Enterprise Code Review',
               '',
@@ -514,7 +496,6 @@ jobs:
             ].join('\n');
             fs.writeFileSync('code-review-report.md', md);
             fs.writeFileSync('code-review-report.json', JSON.stringify(review, null, 2));
-
       - name: Upload code review
         uses: actions/upload-artifact@v4
         with:
@@ -548,14 +529,12 @@ jobs:
             -c Release \
             -o ./publish \
             --no-restore
-
       - name: Create deployment package
         run: |
           cd publish
           zip -r ../app.zip . -x "*.pdb"
           cd ..
           ls -la app.zip
-
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
@@ -567,24 +546,18 @@ jobs:
         run: |
           cat > deployment-summary.md <<EOF
           # Deployment Summary
-
           **Status**: ✅ Deployed
           **Environment**: Production
           **Branch**: ${{ github.ref_name }}
           **Commit**: ${{ github.sha }}
           **Deployed by**: ${{ github.actor }}
           **Timestamp**: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
           ## Deployment URL
-
           https://employee-management-portal.azurewebsites.net
-
           ## Artifacts
-
           - Application: ./app.zip
           - Size: $(du -h app.zip | cut -f1)
           EOF
-
           cat > deployment-logs.txt <<EOF
           Publishing project...
           dotnet publish -c Release
@@ -596,7 +569,6 @@ jobs:
           App Service: employee-management-portal
           Deployment status: 4 (Success)
           EOF
-
       - name: Upload deployment artifacts
         uses: actions/upload-artifact@v4
         with:

@@ -122,4 +122,103 @@ public class CreateEmployeeDtoValidatorTests
 
         result.IsValid.Should().BeFalse();
     }
+
+    // ---------- LastName ----------
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(" ")]
+    public void Validate_WithMissingLastName_ShouldFail(string lastName)
+    {
+        var dto = TestDataFactory.CreateValidDto();
+        dto.LastName = lastName;
+
+        var result = _sut.Validate(dto);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == nameof(dto.LastName));
+    }
+
+    [Fact]
+    public void Validate_WithLastNameExceedingLimit_ShouldFail()
+    {
+        var dto = TestDataFactory.CreateValidDto();
+        dto.LastName = new string('a', 65);
+
+        var result = _sut.Validate(dto);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == nameof(dto.LastName));
+    }
+
+    // ---------- Department ----------
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(" ")]
+    public void Validate_WithMissingDepartment_ShouldFail(string department)
+    {
+        var dto = TestDataFactory.CreateValidDto();
+        dto.Department = department;
+
+        var result = _sut.Validate(dto);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == nameof(dto.Department));
+    }
+
+    [Fact]
+    public void Validate_WithDepartmentExceedingLimit_ShouldFail()
+    {
+        var dto = TestDataFactory.CreateValidDto();
+        dto.Department = new string('a', 65);
+
+        var result = _sut.Validate(dto);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == nameof(dto.Department));
+    }
+
+    // ---------- EmployeeCode length ----------
+
+    [Fact]
+    public void Validate_WithEmployeeCodeExceedingLimit_ShouldFail()
+    {
+        var dto = TestDataFactory.CreateValidDto();
+        dto.EmployeeCode = new string('a', 33);
+
+        var result = _sut.Validate(dto);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == nameof(dto.EmployeeCode));
+    }
+
+    // ---------- Email edge cases ----------
+
+    [Fact]
+    public void Validate_WithEmailExceedingLimit_ShouldFail()
+    {
+        var dto = TestDataFactory.CreateValidDto();
+        // 256-char local part so total length > 254; @ and domain still satisfy the Must rule.
+        dto.Email = $"{new string('a', 250)}@x.io";
+
+        var result = _sut.Validate(dto);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == nameof(dto.Email));
+    }
+
+    [Theory]
+    [InlineData("no-at-sign.com")]
+    [InlineData("missingdot@domain")]
+    public void Validate_WithEmailViolatingMustRule_ShouldFail(string email)
+    {
+        var dto = TestDataFactory.CreateValidDto();
+        dto.Email = email;
+
+        var result = _sut.Validate(dto);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == nameof(dto.Email));
+    }
 }

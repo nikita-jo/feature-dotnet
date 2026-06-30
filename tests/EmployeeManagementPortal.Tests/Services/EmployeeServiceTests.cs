@@ -195,4 +195,182 @@ public class EmployeeServiceTests
 
         result.IsSuccess.Should().BeFalse();
     }
+
+    // ---------- Constructor null guards ----------
+
+    [Fact]
+    public void Constructor_WithNullRepository_ShouldThrow()
+    {
+        var act = () => new EmployeeService(
+            null!,
+            _createValidator,
+            _updateValidator,
+            NullLogger<EmployeeService>.Instance,
+            _timeProvider);
+
+        act.Should().Throw<ArgumentNullException>().WithParameterName("repository");
+    }
+
+    [Fact]
+    public void Constructor_WithNullCreateValidator_ShouldThrow()
+    {
+        var act = () => new EmployeeService(
+            _repo.Object,
+            null!,
+            _updateValidator,
+            NullLogger<EmployeeService>.Instance,
+            _timeProvider);
+
+        act.Should().Throw<ArgumentNullException>().WithParameterName("createValidator");
+    }
+
+    [Fact]
+    public void Constructor_WithNullUpdateValidator_ShouldThrow()
+    {
+        var act = () => new EmployeeService(
+            _repo.Object,
+            _createValidator,
+            null!,
+            NullLogger<EmployeeService>.Instance,
+            _timeProvider);
+
+        act.Should().Throw<ArgumentNullException>().WithParameterName("updateValidator");
+    }
+
+    [Fact]
+    public void Constructor_WithNullLogger_ShouldThrow()
+    {
+        var act = () => new EmployeeService(
+            _repo.Object,
+            _createValidator,
+            _updateValidator,
+            null!,
+            _timeProvider);
+
+        act.Should().Throw<ArgumentNullException>().WithParameterName("logger");
+    }
+
+    [Fact]
+    public void Constructor_WithNullTimeProvider_ShouldThrow()
+    {
+        var act = () => new EmployeeService(
+            _repo.Object,
+            _createValidator,
+            _updateValidator,
+            NullLogger<EmployeeService>.Instance,
+            null!);
+
+        act.Should().Throw<ArgumentNullException>().WithParameterName("timeProvider");
+    }
+
+    // ---------- CreateAsync edges ----------
+
+    [Fact]
+    public async Task CreateAsync_WithNullDto_ShouldThrow()
+    {
+        var act = () => _sut.CreateAsync(null!);
+
+        await act.Should().ThrowAsync<ArgumentNullException>();
+    }
+
+    [Fact]
+    public async Task CreateAsync_WithMultipleValidationErrors_ShouldReturnAllErrors()
+    {
+        var dto = TestDataFactory.CreateValidDto();
+        dto.Email = "not-an-email";
+        dto.FirstName = string.Empty;
+        dto.LastName = string.Empty;
+
+        var result = await _sut.CreateAsync(dto);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Errors.Should().HaveCountGreaterOrEqualTo(3);
+        _repo.Verify(r => r.AddAsync(It.IsAny<Employee>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    // ---------- UpdateAsync edges ----------
+
+    [Fact]
+    public async Task UpdateAsync_WithNullDto_ShouldThrow()
+    {
+        var act = () => _sut.UpdateAsync(null!);
+
+        await act.Should().ThrowAsync<ArgumentNullException>();
+    }
+
+    [Fact]
+    public async Task UpdateAsync_WithInvalidDto_ShouldNotPersist()
+    {
+        var dto = TestDataFactory.CreateValidUpdate(id: 5);
+        dto.Email = "not-an-email";
+
+        var result = await _sut.UpdateAsync(dto);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Errors.Should().NotBeEmpty();
+        _repo.Verify(r => r.UpdateAsync(It.IsAny<Employee>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task UpdateAsync_WhenEmailOwnedBySameEmployee_ShouldSucceed()
+    {
+        // Covers the `emailOwner.Id == dto.Id` branch: lookup returns the same entity being updated.
+        var dto = TestDataFactory.CreateValidUpdate(id: 5);
+        var entity = TestDataFactory.CreateEmployee(id: 5);
+        _repo.Setup(r => r.GetByIdAsync(5, It.IsAny<CancellationToken>())).ReturnsAsync(entity);
+        _repo.Setup(r => r.GetByEmailAsync(dto.Email, It.IsAny<CancellationToken>())).ReturnsAsync(entity);
+        _repo.Setup(r => r.GetByEmployeeCodeAsync(dto.EmployeeCode, It.IsAny<CancellationToken>())).ReturnsAsync(entity);
+        _repo.Setup(r => r.UpdateAsync(entity, It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
+
+        var result = await _sut.UpdateAsync(dto);
+
+        result.IsSuccess.Should().BeTrue();
+        _repo.Verify(r => r.UpdateAsync(entity, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task UpdateAsync_WhenEmployeeCodeOwnedByAnother_ShouldFail()
+    {
+        var dto = TestDataFactory.CreateValidUpdate(id: 5);
+        var entity = TestDataFactory.CreateEmployee(id: 5);
+        var other = TestDataFactory.CreateEmployee(id: 6);
+        _repo.Setup(r => r.GetByIdAsync(5, It.IsAny<CancellationToken>())).ReturnsAsync(entity);
+        _repo.Setup(r => r.GetByEmailAsync(dto.Email, It.IsAny<CancellationToken>())).ReturnsAsync(entity);
+        _repo.Setup(r => r.GetByEmployeeCodeAsync(dto.EmployeeCode, It.IsAny<CancellationToken>())).ReturnsAsync(other);
+
+        var result = await _sut.UpdateAsync(dto);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.Contains("Another employee already uses this code"));
+        _repo.Verify(r => r.UpdateAsync(It.IsAny<Employee>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    // ---------- DeleteAsync edges ----------
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public async Task DeleteAsync_WithNonPositiveId_ShouldFail(int id)
+    {
+        var result = await _sut.DeleteAsync(id);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.Contains("greater than zero"));
+        _repo.Verify(r => r.GetByIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    // ---------- CancellationToken propagation ----------
+
+    [Fact]
+    public async Task GetByIdAsync_ShouldPropagateCancellationToken()
+    {
+        var entity = TestDataFactory.CreateEmployee(id: 7);
+        using var cts = new CancellationTokenSource();
+        _repo.Setup(r => r.GetByIdAsync(7, cts.Token)).ReturnsAsync(entity);
+
+        var result = await _sut.GetByIdAsync(7, cts.Token);
+
+        result.IsSuccess.Should().BeTrue();
+        _repo.Verify(r => r.GetByIdAsync(7, cts.Token), Times.Once);
+    }
 }

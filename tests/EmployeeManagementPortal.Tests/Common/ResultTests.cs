@@ -30,6 +30,35 @@ public class ResultTests
         var result = Result<int>.Failure(Array.Empty<string>());
 
         result.IsSuccess.Should().BeFalse();
-        result.Errors.Should().ContainSingle();
+        result.Errors.Should().ContainSingle().Which.Should().Be("Unknown error");
+    }
+
+    [Fact]
+    public void Failure_WithMultipleMessages_ShouldExposeAll()
+    {
+        var result = Result<int>.Failure(new[] { "first", "second", "third" });
+
+        result.IsSuccess.Should().BeFalse();
+        result.Errors.Should().HaveCount(3);
+        result.Errors.Should().Contain(new[] { "first", "second", "third" });
+    }
+
+    [Fact]
+    public void Failure_WithReadOnlyList_ShouldExposeIt()
+    {
+        IReadOnlyList<string> errors = new[] { "alpha", "beta" };
+
+        var result = Result<string>.Failure(errors);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Errors.Should().BeEquivalentTo(errors);
+    }
+
+    [Fact]
+    public void Failure_WithEmptyReadOnlyList_ShouldExposeDefaultMessage()
+    {
+        var result = Result<int>.Failure(Array.Empty<string>() as IReadOnlyList<string>);
+
+        result.Errors.Should().ContainSingle().Which.Should().Be("Unknown error");
     }
 }

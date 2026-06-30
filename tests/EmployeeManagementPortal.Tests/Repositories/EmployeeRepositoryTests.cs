@@ -144,4 +144,99 @@ public class EmployeeRepositoryTests : IDisposable
         (await _sut.ExistsAsync(saved.Id)).Should().BeTrue();
         (await _sut.ExistsAsync(999_999)).Should().BeFalse();
     }
+
+    [Fact]
+    public async Task GetByEmailAsync_ShouldBeCaseAndTrimInsensitive()
+    {
+        // Insert via raw _context to verify the *lookup* path (not the AddAsync normalizer)
+        // handles mixed-case and surrounding whitespace.
+        _context.Employees.Add(new Employee
+        {
+            EmployeeCode = "EMP-CASE",
+            FirstName = "A",
+            LastName = "B",
+            Email = "MIXED@Example.COM",
+            Department = "X",
+            Salary = 1m,
+            DateOfJoining = DateTime.UtcNow
+        });
+        await _context.SaveChangesAsync();
+
+        var lower = await _sut.GetByEmailAsync("mixed@example.com");
+        var trimmed = await _sut.GetByEmailAsync("  MIXED@Example.COM  ");
+
+        lower.Should().NotBeNull();
+        trimmed.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task GetByEmployeeCodeAsync_WhenPresent_ShouldReturn()
+    {
+        _context.Employees.Add(new Employee
+        {
+            EmployeeCode = "EMP-CODE-1",
+            FirstName = "A",
+            LastName = "B",
+            Email = "code1@x.com",
+            Department = "X",
+            Salary = 1m,
+            DateOfJoining = DateTime.UtcNow
+        });
+        await _context.SaveChangesAsync();
+
+        var result = await _sut.GetByEmployeeCodeAsync("  EMP-CODE-1  ");
+
+        result.Should().NotBeNull();
+        result!.Email.Should().Be("code1@x.com");
+    }
+
+    [Fact]
+    public async Task GetByEmployeeCodeAsync_WhenMissing_ShouldReturnNull()
+    {
+        var result = await _sut.GetByEmployeeCodeAsync("NOPE-0000");
+
+        result.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task AddAsync_ShouldNormalizeEmailAndCode()
+    {
+        var saved = await _sut.AddAsync(new Employee
+        {
+            EmployeeCode = "  EMP-NORM  ",
+            FirstName = "A",
+            LastName = "B",
+            Email = "  MIXED@Example.COM  ",
+            Department = "X",
+            Salary = 1m,
+            DateOfJoining = DateTime.UtcNow
+        });
+
+        saved.EmployeeCode.Should().Be("EMP-NORM");
+        saved.Email.Should().Be("mixed@example.com");
+    }
+
+    [Fact]
+    public async Task AddAsync_WithNullEmployee_ShouldThrow()
+    {
+        var act = () => _sut.AddAsync(null!);
+
+        await act.Should().ThrowAsync<ArgumentNullException>();
+    }
+
+    [Fact]
+    public async Task UpdateAsync_WithNullEmployee_ShouldThrow()
+    {
+        var act = () => _sut.UpdateAsync(null!);
+
+        await act.Should().ThrowAsync<ArgumentNullException>();
+    }
+
+    [Fact]
+    public async Task DeleteAsync_WithNullEmployee_ShouldThrow()
+    {
+        var act = () => _sut.DeleteAsync(null!);
+
+        await act.Should().ThrowAsync<ArgumentNullException>();
+    }
 }

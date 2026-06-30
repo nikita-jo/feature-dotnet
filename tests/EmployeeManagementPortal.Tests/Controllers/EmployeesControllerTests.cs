@@ -213,6 +213,20 @@ public class EmployeesControllerTests
     }
 
     [Fact]
+    public async Task Edit_Post_OnFailure_ShouldReturnView()
+    {
+        var dto = new UpdateEmployeeDto { Id = 5 };
+        _service.Setup(s => s.UpdateAsync(dto, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<EmployeeDto>.Failure("invalid"));
+
+        var result = await _sut.Edit(5, dto, CancellationToken.None);
+
+        result.Should().BeOfType<ViewResult>()
+            .Which.Model.Should().Be(dto);
+        _sut.ModelState.ErrorCount.Should().BeGreaterThan(0);
+    }
+
+    [Fact]
     public async Task DeleteConfirmed_OnFailure_ShouldStillRedirectWithModelError()
     {
         _service.Setup(s => s.DeleteAsync(1, It.IsAny<CancellationToken>()))
@@ -221,5 +235,75 @@ public class EmployeesControllerTests
         var result = await _sut.DeleteConfirmed(1, CancellationToken.None);
 
         result.Should().BeOfType<RedirectToActionResult>();
+    }
+
+    // ---------- TempData SuccessMessage on the success path ----------
+
+    [Fact]
+    public async Task Create_Post_OnSuccess_ShouldSetTempDataSuccessMessage()
+    {
+        var dto = new CreateEmployeeDto { FirstName = "Ada", LastName = "Lovelace" };
+        _service.Setup(s => s.CreateAsync(dto, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<EmployeeDto>.Success(new EmployeeDto { Id = 1, FullName = "Ada Lovelace" }));
+
+        await _sut.Create(dto, CancellationToken.None);
+
+        _sut.TempData.Should().ContainKey("SuccessMessage");
+        _sut.TempData["SuccessMessage"].Should().BeOfType<string>()
+            .Which.Should().Contain("Ada Lovelace");
+    }
+
+    [Fact]
+    public async Task Edit_Post_OnSuccess_ShouldSetTempDataSuccessMessage()
+    {
+        var dto = new UpdateEmployeeDto
+        {
+            Id = 5,
+            FirstName = "Ada",
+            LastName = "Lovelace",
+            EmployeeCode = "EMP-5",
+            Email = "ada@x.com",
+            Department = "Eng",
+            Salary = 1m,
+            DateOfJoining = DateTime.UtcNow
+        };
+        _service.Setup(s => s.UpdateAsync(dto, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<EmployeeDto>.Success(new EmployeeDto { Id = 5, FullName = "Ada Lovelace" }));
+
+        await _sut.Edit(5, dto, CancellationToken.None);
+
+        _sut.TempData.Should().ContainKey("SuccessMessage");
+        _sut.TempData["SuccessMessage"].Should().BeOfType<string>()
+            .Which.Should().Contain("Ada Lovelace");
+    }
+
+    [Fact]
+    public async Task DeleteConfirmed_OnSuccess_ShouldSetTempDataSuccessMessage()
+    {
+        _service.Setup(s => s.DeleteAsync(1, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<bool>.Success(true));
+
+        await _sut.DeleteConfirmed(1, CancellationToken.None);
+
+        _sut.TempData.Should().ContainKey("SuccessMessage");
+        _sut.TempData["SuccessMessage"].Should().BeOfType<string>();
+    }
+
+    // ---------- Constructor null guards ----------
+
+    [Fact]
+    public void Constructor_WithNullService_ShouldThrow()
+    {
+        var act = () => new EmployeesController(null!, NullLogger<EmployeesController>.Instance);
+
+        act.Should().Throw<ArgumentNullException>().WithParameterName("employeeService");
+    }
+
+    [Fact]
+    public void Constructor_WithNullLogger_ShouldThrow()
+    {
+        var act = () => new EmployeesController(_service.Object, null!);
+
+        act.Should().Throw<ArgumentNullException>().WithParameterName("logger");
     }
 }
