@@ -5,6 +5,7 @@ using EmployeeManagementPortal.Application.Services;
 using EmployeeManagementPortal.Application.Validators;
 using FluentValidation;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace EmployeeManagementPortal.Tests.Application;
