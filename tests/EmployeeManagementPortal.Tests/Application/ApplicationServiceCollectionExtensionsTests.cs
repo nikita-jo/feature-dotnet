@@ -25,7 +25,7 @@ public class ApplicationServiceCollectionExtensionsTests
         // ILogger<EmployeeService> (host-provided). The Application layer doesn't
         // own either, so substitute stubs to validate its own wiring in isolation.
         services.AddSingleton(Mock.Of<IEmployeeRepository>());
-        services.AddSingleton(NullLogger<EmployeeService>.Instance);
+        services.AddSingleton<ILogger<EmployeeService>>(NullLogger<EmployeeService>.Instance);
 
         using var provider = services.BuildServiceProvider();
         var service = provider.GetRequiredService<IEmployeeService>();
