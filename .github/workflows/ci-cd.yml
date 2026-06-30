@@ -223,6 +223,10 @@ jobs:
     name: 3. SonarQube Scan
     needs: test
     runs-on: ubuntu-latest
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -254,11 +258,7 @@ jobs:
           path: .
 
       - name: Run SonarQube Scan
-        if: ${{ secrets.SONAR_TOKEN != '' && secrets.SONAR_HOST_URL != '' }}
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        if: ${{ env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
         run: |
           dotnet tool install -g dotnet-sonarscanner
           export PATH="$PATH:$HOME/.dotnet/tools"
@@ -288,7 +288,7 @@ jobs:
           dotnet build ${{ env.SOLUTION }} --no-incremental
           dotnet-sonarscanner end /d:sonar.token="${{ secrets.SONAR_TOKEN }}"
       - name: Sonar Security Agent
-        if: ${{ secrets.SONAR_TOKEN != '' && secrets.SONAR_HOST_URL != '' }}
+        if: ${{ env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
         uses: actions/github-script@v7
         with:
           script: |
@@ -329,7 +329,7 @@ jobs:
             require('fs').writeFileSync('security-summary.md', md);
             require('fs').writeFileSync('security-summary.json', JSON.stringify(summary, null, 2));
       - name: Upload security summary
-        if: ${{ secrets.SONAR_TOKEN != '' && secrets.SONAR_HOST_URL != '' }}
+        if: ${{ env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: security-summary
