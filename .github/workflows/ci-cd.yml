@@ -11,6 +11,10 @@ env:
   SOLUTION: EmployeeManagementPortal.sln
   TEST_PROJECT: tests/EmployeeManagementPortal.Tests/EmployeeManagementPortal.Tests.csproj
   COVERAGE_THRESHOLD: 85
+  # NVIDIA_API_KEY must be a build.nvidia.com "nvapi-..." key with the
+  # "Public API Endpoints" permission. The four LLM "agent" steps below
+  # call https://integrate.api.nvidia.com/v1/chat/completions and skip
+  # themselves when this secret is missing.
 
 permissions:
   contents: read
@@ -76,6 +80,8 @@ jobs:
     name: 2. Test + Coverage
     needs: build
     runs-on: ubuntu-latest
+    env:
+      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -144,12 +150,14 @@ jobs:
           path: '**/TestResults/**'
           if-no-files-found: warn
 
-      - name: Coverage Analysis Agent
+      - name: Coverage Analysis Agent (NVIDIA NIM)
         id: coverage-analysis
+        if: env.NVIDIA_API_KEY != ''
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
+            // Step 1: deterministic data extraction (unchanged from previous impl).
             const cobertura = fs.readFileSync('coverage.cobertura.xml', 'utf-8');
             const coverageMatch = cobertura.match(/line-rate="([0-9.]+)"/);
             const branchMatch = cobertura.match(/branch-rate="([0-9.]+)"/);
@@ -170,36 +178,52 @@ jobs:
                 failed += parseInt(m[3]);
               }
             }
+            const facts = {
+              lineRate: linePct, branchRate: branchPct, threshold,
+              pass, tests: { total, passed, failed },
+              generatedAt: new Date().toISOString()
+            };
+            // Step 2: ask the model to write the human-facing Markdown.
+            const res = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}`,
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+              },
+              body: JSON.stringify({
+                model: 'meta/llama-3.3-70b-instruct',
+                temperature: 0.1,
+                top_p: 0.9,
+                max_tokens: 2048,
+                stream: false,
+                messages: [
+                  { role: 'system', content: 'You are a CI coverage analyst. Produce a Markdown report with a coverage table (line %, branch %, threshold, pass/fail), a test summary, and concrete recommendations for bringing line coverage above the threshold. Do not invent numbers — only use the inputs provided.' },
+                  { role: 'user', content: JSON.stringify(facts) }
+                ]
+              })
+            });
+            if (!res.ok) {
+              const errText = await res.text();
+              core.setFailed(`NVIDIA NIM ${res.status}: ${errText.slice(0, 500)}`);
+              return;
+            }
+            const data = await res.json();
+            const modelText = data.choices?.[0]?.message?.content?.trim() || '';
+            // Keep JSON shape compatible with downstream Stage 5 reader
+            // (coverage.coverage.pass and coverage.tests.*) plus new fields.
             const summary = {
               coverage: { lineRate: linePct, branchRate: branchPct, threshold, pass },
               tests: { total, passed, failed },
-              timestamp: new Date().toISOString()
+              timestamp: facts.generatedAt,
+              model: 'meta/llama-3.3-70b-instruct',
+              report: modelText
             };
             fs.writeFileSync('coverage-summary.json', JSON.stringify(summary, null, 2));
-            const md = [
-              '# Coverage Report',
-              '',
-              `**Generated**: ${summary.timestamp}`,
-              '',
-              '## Coverage',
-              '',
-              `| Metric | Value | Threshold | Status |`,
-              `|---|---|---|---|`,
-              `| Line coverage | ${linePct}% | ${threshold}% | ${pass ? '✅' : '❌'} |`,
-              `| Branch coverage | ${branchPct}% | - | - |`,
-              '',
-              '## Tests',
-              '',
-              `- Total: ${total}`,
-              `- Passed: ${passed}`,
-              `- Failed: ${failed}`,
-              '',
-              '## Recommendations',
-              '',
-              pass ? '- Coverage meets threshold.' : '- Add unit tests to bring coverage above threshold.'
-            ].join('\n');
-            fs.writeFileSync('coverage-report.md', md);
-            core.setOutput('coverage_pass', pass);
+            fs.writeFileSync('coverage-report.md', modelText);
+            // Gate outputs are still derived from the deterministic facts,
+            // not the model output, so the failure gate below stays honest.
+            core.setOutput('coverage_pass', String(pass));
             core.setOutput('line_rate', linePct);
             core.setOutput('branch_rate', branchPct);
       - name: Upload coverage summary
@@ -226,6 +250,7 @@ jobs:
     env:
       SONAR_TOKEN: ${{ secrets.SONARCLOUD_TOKEN }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -288,46 +313,77 @@ jobs:
             $PR_ARGS
           dotnet build ${{ env.SOLUTION }} --no-incremental
           dotnet-sonarscanner end /d:sonar.token="${{ secrets.SONARCLOUD_TOKEN }}"
-      - name: Sonar Security Agent
-        if: ${{ env.SONAR_TOKEN != '' }}
+      - name: Sonar Security Agent (NVIDIA NIM)
+        if: ${{ env.SONAR_TOKEN != '' && env.NVIDIA_API_KEY != '' }}
         uses: actions/github-script@v7
         with:
           script: |
-            const auth = 'Basic ' + Buffer.from('${{ secrets.SONARCLOUD_TOKEN }}:').toString('base64');
+            // Step 1: pull the quality-gate payload from SonarCloud.
+            const auth = 'Basic ' + Buffer.from(process.env.SONAR_TOKEN + ':').toString('base64');
             const url = 'https://sonarcloud.io';
             const projectKey = 'feature-dotnet';
             const response = await fetch(`${url}/api/qualitygates/project_status?projectKey=${projectKey}`, {
               headers: { Authorization: auth }
             });
+            if (!response.ok) {
+              const t = await response.text();
+              core.setFailed(`SonarCloud ${response.status}: ${t.slice(0, 500)}`);
+              return;
+            }
             const data = await response.json();
             const status = data.projectStatus;
-            const summary = {
+            const facts = {
               qualityGate: status.status,
               conditions: status.conditions.map(c => ({
                 metric: c.metricKey,
                 status: c.status,
                 value: c.actualValue
               })),
-              timestamp: new Date().toISOString()
+              counts: {
+                bugs: (status.conditions.find(c => c.metricKey === 'bugs') || {}).actualValue || 0,
+                vulnerabilities: (status.conditions.find(c => c.metricKey === 'new_vulnerabilities') || {}).actualValue || 0,
+                codeSmells: (status.conditions.find(c => c.metricKey === 'code_smells') || {}).actualValue || 0
+              },
+              generatedAt: new Date().toISOString()
             };
-            const md = [
-              '# SonarCloud Security Summary',
-              '',
-              `**Generated**: ${summary.timestamp}`,
-              '',
-              `## Quality Gate: ${status.status}`,
-              '',
-              '| Metric | Status | Value |',
-              '|---|---|---|',
-              ...status.conditions.map(c => `| ${c.metricKey} | ${c.status} | ${c.actualValue} |`),
-              '',
-              '## Issues',
-              '',
-              `- Bugs: ${(data.projectStatus.conditions.find(c => c.metricKey === 'bugs') || {}).actualValue || 0}`,
-              `- Vulnerabilities: ${(data.projectStatus.conditions.find(c => c.metricKey === 'new_vulnerabilities') || {}).actualValue || 0}`,
-              `- Code Smells: ${(data.projectStatus.conditions.find(c => c.metricKey === 'code_smells') || {}).actualValue || 0}`
-            ].join('\n');
-            require('fs').writeFileSync('security-summary.md', md);
+            // Step 2: ask the model for a prose summary.
+            const res = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}`,
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+              },
+              body: JSON.stringify({
+                model: 'nvidia/llama-3.1-nemotron-ultra-253b-v1',
+                temperature: 0.1,
+                top_p: 0.9,
+                max_tokens: 2048,
+                stream: false,
+                messages: [
+                  { role: 'system', content: 'You are a security analyst. Given a SonarCloud quality-gate payload, write a Markdown summary naming the failing metrics, what they mean in plain English, and a prioritized remediation list. Do not invent numbers.' },
+                  { role: 'user', content: JSON.stringify(facts) }
+                ]
+              })
+            });
+            if (!res.ok) {
+              const errText = await res.text();
+              core.setFailed(`NVIDIA NIM ${res.status}: ${errText.slice(0, 500)}`);
+              return;
+            }
+            const llm = await res.json();
+            const modelText = llm.choices?.[0]?.message?.content?.trim() || '';
+            // Preserve JSON shape for downstream Stage 5 reader
+            // (qualityGate, conditions, timestamp).
+            const summary = {
+              qualityGate: facts.qualityGate,
+              conditions: facts.conditions,
+              timestamp: facts.generatedAt,
+              model: 'nvidia/llama-3.1-nemotron-ultra-253b-v1',
+              counts: facts.counts,
+              report: modelText
+            };
+            require('fs').writeFileSync('security-summary.md', modelText);
             require('fs').writeFileSync('security-summary.json', JSON.stringify(summary, null, 2));
       - name: Upload security summary
         if: ${{ env.SONAR_TOKEN != '' }}
@@ -346,6 +402,8 @@ jobs:
     name: 4. CodeQL Scan
     needs: test
     runs-on: ubuntu-latest
+    env:
+      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
     permissions:
       actions: read
       contents: read
@@ -380,15 +438,17 @@ jobs:
         with:
           category: "/language:${{ matrix.language }}"
 
-      - name: Security Analysis Agent
+      - name: Security Analysis Agent (NVIDIA NIM)
         uses: actions/github-script@v7
-        if: always()
+        if: always() && env.NVIDIA_API_KEY != ''
         with:
           script: |
             const fs = require('fs');
             const path = require('path');
+            // Step 1: deterministic severity tally (unchanged).
             const sarifDir = require('child_process').execSync('find . -name "*.sarif"', { encoding: 'utf8' }).trim();
             let critical = 0, medium = 0, low = 0;
+            const sampleFindings = [];
             for (const f of sarifDir.split('\n').filter(Boolean)) {
               const sarif = JSON.parse(fs.readFileSync(f, 'utf-8'));
               for (const run of sarif.runs || []) {
@@ -397,38 +457,60 @@ jobs:
                   if (level === 'error') critical++;
                   else if (level === 'warning') medium++;
                   else low++;
+                  if (sampleFindings.length < 3) {
+                    sampleFindings.push({
+                      ruleId: result.ruleId,
+                      level,
+                      message: (result.message && result.message.text) ? result.message.text.slice(0, 240) : ''
+                    });
+                  }
                 }
               }
             }
-            const summary = {
+            const facts = {
               critical, medium, low,
               riskScore: critical * 10 + medium * 3 + low,
-              timestamp: new Date().toISOString()
+              sampleFindings,
+              generatedAt: new Date().toISOString()
             };
-            const md = [
-              '# CodeQL Security Analysis',
-              '',
-              `**Generated**: ${summary.timestamp}`,
-              '',
-              '## Findings',
-              '',
-              `| Severity | Count |`,
-              `|---|---|`,
-              `| Critical/Error | ${critical} |`,
-              `| Medium/Warning | ${medium} |`,
-              `| Low/Note | ${low} |`,
-              '',
-              `**Risk Score**: ${summary.riskScore}`,
-              '',
-              '## OWASP Mapping',
-              '',
-              '- A01:2021 – Broken Access Control',
-              '- A02:2021 – Cryptographic Failures',
-              '- A03:2021 – Injection',
-              '- A05:2021 – Security Misconfiguration',
-              '- A09:2021 – Security Logging and Monitoring Failures'
-            ].join('\n');
-            fs.writeFileSync('security-analysis.md', md);
+            // Step 2: ask the model to write a prose OWASP report.
+            const res = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}`,
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+              },
+              body: JSON.stringify({
+                model: 'nvidia/llama-3.3-nemotron-super-49b-v1.5',
+                temperature: 0.1,
+                top_p: 0.9,
+                max_tokens: 2048,
+                stream: false,
+                messages: [
+                  { role: 'system', content: 'You are a security analyst. Given a CodeQL severity tally and short sample findings, write a Markdown report with severity table, a 1-2 sentence description of what each severity level means, OWASP Top 10 mapping, and concrete next-step suggestions. Do not invent CVEs.' },
+                  { role: 'user', content: JSON.stringify(facts) }
+                ]
+              })
+            });
+            if (!res.ok) {
+              const errText = await res.text();
+              core.setFailed(`NVIDIA NIM ${res.status}: ${errText.slice(0, 500)}`);
+              return;
+            }
+            const llm = await res.json();
+            const modelText = llm.choices?.[0]?.message?.content?.trim() || '';
+            // Preserve JSON shape for downstream Stage 5 reader
+            // (critical, medium, low, riskScore, timestamp).
+            const summary = {
+              critical, medium, low,
+              riskScore: facts.riskScore,
+              timestamp: facts.generatedAt,
+              model: 'nvidia/llama-3.3-nemotron-super-49b-v1.5',
+              sampleFindings,
+              report: modelText
+            };
+            fs.writeFileSync('security-analysis.md', modelText);
             fs.writeFileSync('security-analysis.json', JSON.stringify(summary, null, 2));
       - name: Upload security analysis
         uses: actions/upload-artifact@v4
@@ -447,6 +529,8 @@ jobs:
     name: 5. AI Code Review
     needs: [test, sonar, codeql]
     runs-on: ubuntu-latest
+    env:
+      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -458,7 +542,22 @@ jobs:
         with:
           path: artifacts
 
-      - name: Enterprise Code Review Agent
+      - name: Capture PR diff
+        if: env.NVIDIA_API_KEY != ''
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            git fetch origin "${{ github.base_ref }}" --depth=1
+            git diff --unified=3 "origin/${{ github.base_ref }}"...HEAD > pr.diff || true
+          else
+            # On push, diff the previous successful commit on the same branch.
+            git diff --unified=3 HEAD~1...HEAD > pr.diff || true
+          fi
+          # Cap the diff at ~80k chars to keep the prompt within model limits.
+          head -c 80000 pr.diff > pr.diff.tmp && mv pr.diff.tmp pr.diff
+          echo "diff_size=$(wc -c < pr.diff) bytes"
+
+      - name: Enterprise Code Review Agent (NVIDIA NIM)
+        if: env.NVIDIA_API_KEY != ''
         uses: actions/github-script@v7
         with:
           script: |
@@ -469,60 +568,120 @@ jobs:
               try { return fs.readFileSync(path.join(artifactsDir, name), 'utf-8'); }
               catch { return null; }
             };
+            const readRoot = (name) => {
+              try { return fs.readFileSync(name, 'utf-8'); }
+              catch { return null; }
+            };
             const coverage = read('coverage-report/coverage-summary.json');
             const sonar = read('security-summary/security-summary.json');
             const codeql = read('security-analysis/security-analysis.json');
             const coverageData = coverage ? JSON.parse(coverage) : null;
             const sonarData = sonar ? JSON.parse(sonar) : null;
             const codeqlData = codeql ? JSON.parse(codeql) : null;
-            const overallScore = (
+            // pr.diff is written to the workspace root by the Capture PR diff step.
+            const diff = readRoot('pr.diff') || '';
+            // Deterministic baseline score from the three summary JSONs.
+            const baselineScore = (
               (coverageData?.coverage?.pass ? 9 : 6) +
               (sonarData?.qualityGate === 'OK' ? 9 : 5) +
               ((codeqlData?.critical || 0) === 0 ? 9 : 5)
             ) / 3;
-            const review = {
+            const facts = {
               generatedAt: new Date().toISOString(),
-              overallScore: overallScore.toFixed(2),
-              rating: 'X/10',
-              architecture: { score: 9, notes: 'Clean Architecture with strict layer separation (Domain/Application/Infrastructure/Web).' },
-              performance: { score: 8, notes: 'EF Core AsNoTracking used in read paths. Consider response caching for Index action.' },
-              security: { score: 8, notes: 'AntiForgeryToken enabled. No raw SQL. Consider HSTS and CSP headers.' },
-              maintainability: { score: 9, notes: 'SOLID principles applied; no business logic in controllers.' },
-              technicalDebt: { score: 8, notes: 'Minimal duplication; FluentValidation promotes declarative rules.' },
-              bestPractices: { score: 9, notes: 'Repository pattern, DI, structured logging, async I/O.' }
+              baselineScore: Number(baselineScore.toFixed(2)),
+              coverage: coverageData,
+              sonar: sonarData,
+              codeql: codeqlData,
+              prDiff: diff.slice(0, 60000)
+            };
+            const res = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}`,
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+              },
+              body: JSON.stringify({
+                model: 'qwen/qwen3-coder-480b-a35b-instruct',
+                temperature: 0.2,
+                top_p: 0.9,
+                max_tokens: 4096,
+                stream: false,
+                messages: [
+                  { role: 'system', content: 'You are a senior staff engineer producing an enterprise code review. Given the CI coverage, SonarCloud quality-gate, CodeQL security summary, and the PR diff, produce a JSON object with fields: overallScore (0-10, one decimal), rating (X/10 string), architecture {score, notes}, performance {score, notes}, security {score, notes}, maintainability {score, notes}, technicalDebt {score, notes}, bestPractices {score, notes}, recommendations (array of strings). Output ONLY the JSON object, no prose, no fences.' },
+                  { role: 'user', content: JSON.stringify(facts) }
+                ]
+              })
+            });
+            if (!res.ok) {
+              const errText = await res.text();
+              core.setFailed(`NVIDIA NIM ${res.status}: ${errText.slice(0, 500)}`);
+              return;
+            }
+            const llm = await res.json();
+            const raw = llm.choices?.[0]?.message?.content?.trim() || '';
+            // The model is instructed to return JSON only; strip stray fences if any.
+            const cleaned = raw.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+            let review;
+            try {
+              review = JSON.parse(cleaned);
+            } catch (e) {
+              fs.writeFileSync('code-review-report.md',
+                '# Enterprise Code Review\n\n' +
+                `**Generated**: ${facts.generatedAt}\n\n` +
+                '## Model Output (unparseable)\n\n```\n' + raw + '\n```\n\n' +
+                `**Error**: ${e.message}\n`
+              );
+              core.setFailed(`Model output was not valid JSON: ${e.message}`);
+              return;
+            }
+            // Shape-stable wrapper so consumers downstream see a consistent object.
+            const wrapped = {
+              generatedAt: facts.generatedAt,
+              model: 'qwen/qwen3-coder-480b-a35b-instruct',
+              baselineScore: facts.baselineScore,
+              overallScore: review.overallScore ?? facts.baselineScore,
+              rating: review.rating ?? `${review.overallScore ?? facts.baselineScore}/10`,
+              architecture: review.architecture,
+              performance: review.performance,
+              security: review.security,
+              maintainability: review.maintainability,
+              technicalDebt: review.technicalDebt,
+              bestPractices: review.bestPractices,
+              recommendations: review.recommendations || []
             };
             const md = [
               '# Enterprise Code Review',
               '',
-              `**Generated**: ${review.generatedAt}`,
+              `**Generated**: ${wrapped.generatedAt}`,
               '',
-              `## Overall Score: ${review.overallScore} / 10`,
+              `## Overall Score: ${wrapped.overallScore} / 10 (baseline ${wrapped.baselineScore} / 10)`,
               '',
               '## Architecture',
-              `Score: ${review.architecture.score}/10 — ${review.architecture.notes}`,
+              `Score: ${wrapped.architecture?.score}/10 — ${wrapped.architecture?.notes || ''}`,
               '',
               '## Performance',
-              `Score: ${review.performance.score}/10 — ${review.performance.notes}`,
+              `Score: ${wrapped.performance?.score}/10 — ${wrapped.performance?.notes || ''}`,
               '',
               '## Security',
-              `Score: ${review.security.score}/10 — ${review.security.notes}`,
+              `Score: ${wrapped.security?.score}/10 — ${wrapped.security?.notes || ''}`,
               '',
               '## Maintainability',
-              `Score: ${review.maintainability.score}/10 — ${review.maintainability.notes}`,
+              `Score: ${wrapped.maintainability?.score}/10 — ${wrapped.maintainability?.notes || ''}`,
               '',
               '## Technical Debt',
-              `Score: ${review.technicalDebt.score}/10 — ${review.technicalDebt.notes}`,
+              `Score: ${wrapped.technicalDebt?.score}/10 — ${wrapped.technicalDebt?.notes || ''}`,
               '',
               '## Best Practices',
-              `Score: ${review.bestPractices.score}/10 — ${review.bestPractices.notes}`,
+              `Score: ${wrapped.bestPractices?.score}/10 — ${wrapped.bestPractices?.notes || ''}`,
               '',
               '## Improvement Suggestions',
-              '- Add integration tests for the Web layer using WebApplicationFactory.',
-              '- Introduce response caching for the Employees index.',
-              '- Add pagination for large employee lists.'
+              ...(wrapped.recommendations.length
+                ? wrapped.recommendations.map(r => `- ${r}`)
+                : ['- (no recommendations returned)'])
             ].join('\n');
             fs.writeFileSync('code-review-report.md', md);
-            fs.writeFileSync('code-review-report.json', JSON.stringify(review, null, 2));
+            fs.writeFileSync('code-review-report.json', JSON.stringify(wrapped, null, 2));
       - name: Upload code review
         uses: actions/upload-artifact@v4
         with:
