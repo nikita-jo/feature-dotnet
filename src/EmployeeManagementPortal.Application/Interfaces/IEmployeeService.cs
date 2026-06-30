@@ -1,3 +1,4 @@
+using EmployeeManagementPortal.Application.Common;
 using EmployeeManagementPortal.Application.DTOs;
 
 namespace EmployeeManagementPortal.Application.Interfaces;
