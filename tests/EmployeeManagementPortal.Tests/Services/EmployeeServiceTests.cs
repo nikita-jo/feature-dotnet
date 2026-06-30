@@ -170,7 +170,7 @@ public class EmployeeServiceTests
         var result = await _sut.UpdateAsync(dto);
 
         result.IsSuccess.Should().BeFalse();
-        result.Errors.Should().Contain(e => e.Contains("another employee already uses this email"));
+        result.Errors.Should().Contain(e => e.Contains("Another employee already uses this email"));
     }
 
     [Fact]

@@ -3,7 +3,9 @@ using EmployeeManagementPortal.Application.DTOs;
 using EmployeeManagementPortal.Application.Interfaces;
 using EmployeeManagementPortal.Web.Controllers;
 using FluentAssertions;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.ViewFeatures;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 
@@ -21,6 +23,34 @@ public class EmployeesControllerTests
     public EmployeesControllerTests()
     {
         _sut = new EmployeesController(_service.Object, NullLogger<EmployeesController>.Instance);
+
+        // Wire a real HttpContext so Controller.TempData resolves. The dictionary
+        // is backed by a tiny in-memory provider so success-path tests can write
+        // TempData without a real session.
+        var httpContext = new DefaultHttpContext();
+        var tempData = new TempDataDictionary(httpContext, new InMemoryTempDataProvider());
+        _sut.ControllerContext = new ControllerContext { HttpContext = httpContext };
+        _sut.TempData = tempData;
+    }
+
+    /// <summary>
+    /// Minimal in-memory <see cref="ITempDataProvider"/> so unit tests can read/write TempData
+    /// without standing up a session. Production still uses SessionStateTempDataProvider.
+    /// </summary>
+    private sealed class InMemoryTempDataProvider : ITempDataProvider
+    {
+        private readonly Dictionary<string, object?> _store = new();
+
+        public IDictionary<string, object?> LoadTempData(HttpContext context) => new Dictionary<string, object?>(_store);
+
+        public void SaveTempData(HttpContext context, IDictionary<string, object?> values)
+        {
+            _store.Clear();
+            foreach (var kvp in values)
+            {
+                _store[kvp.Key] = kvp.Value;
+            }
+        }
     }
 
     [Fact]

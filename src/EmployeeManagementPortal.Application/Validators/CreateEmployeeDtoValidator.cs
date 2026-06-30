@@ -26,7 +26,8 @@ public sealed class CreateEmployeeDtoValidator : AbstractValidator<CreateEmploye
 
         RuleFor(x => x.Email)
             .NotEmpty().WithMessage("Email is required.")
-            .EmailAddress().WithMessage("A valid email address is required.")
+            .EmailAddress(mode: EmailValidationMode.AspNetCoreCompatible)
+                .WithMessage("A valid email address is required.")
             .MaximumLength(254).WithMessage("Email must not exceed 254 characters.");
 
         RuleFor(x => x.Department)

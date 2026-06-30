@@ -55,6 +55,11 @@ public sealed class EmployeeRepository : IEmployeeRepository
     {
         ArgumentNullException.ThrowIfNull(employee);
 
+        // Normalize at the persistence boundary so callers don't have to remember.
+        // Mirrors the lookup-side normalization in GetByEmailAsync / GetByEmployeeCodeAsync.
+        employee.Email = employee.Email.Trim().ToLowerInvariant();
+        employee.EmployeeCode = employee.EmployeeCode.Trim();
+
         var entry = await _dbContext.Employees.AddAsync(employee, cancellationToken).ConfigureAwait(false);
         await _dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         return entry.Entity;
