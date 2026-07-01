@@ -420,7 +420,6 @@ jobs:
             const fs = require('fs');
             const path = require('path');
             const { execSync } = require('child_process');
-            const githubCore = require('@actions/core');
             const sarifDir = execSync('find . -name "*.sarif"', { encoding: 'utf8' }).trim();
             
             let criticalCount = 0, mediumCount = 0, lowCount = 0;
@@ -454,47 +453,56 @@ jobs:
               generatedAt: new Date().toISOString()
             };
             
-            const apiResponse = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
-              method: 'POST',
-              headers: {
-                'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}`,
-                'Content-Type': 'application/json',
-                'Accept': 'application/json'
-              },
-              body: JSON.stringify({
-                model: 'nvidia/llama-3.3-nemotron-super-49b-v1.5',
-                temperature: 0.1,
-                top_p: 0.9,
-                max_tokens: 2048,
-                stream: false,
-                messages: [
-                  { role: 'system', content: 'You are a security analyst. Given a CodeQL severity tally and findings, write a Markdown report.' },
-                  { role: 'user', content: JSON.stringify(codeqlData) }
-                ]
-              })
-            });
-            
-            if (!apiResponse.ok) {
-              const errorText = await apiResponse.text();
-              githubCore.setFailed(`CodeQL Analysis ${apiResponse.status}: ${errorText.slice(0, 500)}`);
-              return;
+            try {
+              const controller = new AbortController();
+              const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 minute timeout
+              
+              const apiResponse = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}`,
+                  'Content-Type': 'application/json',
+                  'Accept': 'application/json'
+                },
+                body: JSON.stringify({
+                  model: 'nvidia/llama-3.3-nemotron-super-49b-v1.5',
+                  temperature: 0.1,
+                  top_p: 0.9,
+                  max_tokens: 2048,
+                  stream: false,
+                  messages: [
+                    { role: 'system', content: 'You are a security analyst. Given a CodeQL severity tally and findings, write a Markdown report.' },
+                    { role: 'user', content: JSON.stringify(codeqlData) }
+                  ]
+                }),
+                signal: controller.signal
+              });
+              
+              clearTimeout(timeoutId);
+              
+              if (!apiResponse.ok) {
+                const errorText = await apiResponse.text();
+                console.warn(`CodeQL API error ${apiResponse.status}: ${errorText.slice(0, 200)}`);
+              } else {
+                const llmResponse = await apiResponse.json();
+                const modelReport = llmResponse.choices?.[0]?.message?.content?.trim() || '';
+                const summary = {
+                  critical: criticalCount,
+                  medium: mediumCount,
+                  low: lowCount,
+                  riskScore: codeqlData.riskScore,
+                  timestamp: codeqlData.generatedAt,
+                  model: 'nvidia/llama-3.3-nemotron-super-49b-v1.5',
+                  sampleFindings,
+                  report: modelReport
+                };
+                
+                fs.writeFileSync('security-analysis.md', modelReport);
+                fs.writeFileSync('security-analysis.json', JSON.stringify(summary, null, 2));
+              }
+            } catch (error) {
+              console.warn(`CodeQL API call failed: ${error.message}. Continuing without AI analysis.`);
             }
-            
-            const llmResponse = await apiResponse.json();
-            const modelReport = llmResponse.choices?.[0]?.message?.content?.trim() || '';
-            const summary = {
-              critical: criticalCount,
-              medium: mediumCount,
-              low: lowCount,
-              riskScore: codeqlData.riskScore,
-              timestamp: codeqlData.generatedAt,
-              model: 'nvidia/llama-3.3-nemotron-super-49b-v1.5',
-              sampleFindings,
-              report: modelReport
-            };
-            
-            fs.writeFileSync('security-analysis.md', modelReport);
-            fs.writeFileSync('security-analysis.json', JSON.stringify(summary, null, 2));
 
       - name: Upload security analysis
         uses: actions/upload-artifact@v4
