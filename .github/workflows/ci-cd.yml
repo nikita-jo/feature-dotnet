@@ -188,46 +188,55 @@ jobs:
               generatedAt: new Date().toISOString()
             };
             
-            // Call NVIDIA NIM API for analysis
+            // Call NVIDIA NIM API for analysis with timeout
             if (process.env.NVIDIA_API_KEY) {
-              const apiResponse = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
-                method: 'POST',
-                headers: {
-                  'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}`,
-                  'Content-Type': 'application/json',
-                  'Accept': 'application/json'
-                },
-                body: JSON.stringify({
-                  model: 'meta/llama-3.3-70b-instruct',
-                  temperature: 0.1,
-                  top_p: 0.9,
-                  max_tokens: 2048,
-                  stream: false,
-                  messages: [
-                    { role: 'system', content: 'You are a CI coverage analyst. Produce a Markdown report with a coverage table (line %, branch %, threshold, pass/fail), a test summary, and concrete remediation suggestions where coverage is low.' },
-                    { role: 'user', content: JSON.stringify(coverageData) }
-                  ]
-                })
-              });
-              
-              if (!apiResponse.ok) {
-                const errorText = await apiResponse.text();
-                core.setFailed(`NVIDIA NIM ${apiResponse.status}: ${errorText.slice(0, 500)}`);
-                return;
+              try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 minute timeout
+                
+                const apiResponse = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
+                  method: 'POST',
+                  headers: {
+                    'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}`,
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                  },
+                  body: JSON.stringify({
+                    model: 'meta/llama-3.3-70b-instruct',
+                    temperature: 0.1,
+                    top_p: 0.9,
+                    max_tokens: 2048,
+                    stream: false,
+                    messages: [
+                      { role: 'system', content: 'You are a CI coverage analyst. Produce a Markdown report with a coverage table (line %, branch %, threshold, pass/fail), a test summary, and concrete remediation suggestions where coverage is low.' },
+                      { role: 'user', content: JSON.stringify(coverageData) }
+                    ]
+                  }),
+                  signal: controller.signal
+                });
+                
+                clearTimeout(timeoutId);
+                
+                if (!apiResponse.ok) {
+                  const errorText = await apiResponse.text();
+                  console.warn(`NVIDIA NIM API error ${apiResponse.status}: ${errorText.slice(0, 200)}`);
+                } else {
+                  const apiData = await apiResponse.json();
+                  const modelReport = apiData.choices?.[0]?.message?.content?.trim() || '';
+                  const coverageSummary = {
+                    coverage: { lineRate: linePct, branchRate: branchPct, threshold, pass },
+                    tests: { total: totalTests, passed: passedCount, failed: failedCount },
+                    timestamp: coverageData.generatedAt,
+                    model: 'meta/llama-3.3-70b-instruct',
+                    report: modelReport
+                  };
+                  
+                  fs.writeFileSync('coverage-summary.json', JSON.stringify(coverageSummary, null, 2));
+                  fs.writeFileSync('coverage-report.md', modelReport);
+                }
+              } catch (error) {
+                console.warn(`NVIDIA NIM API call failed: ${error.message}. Continuing without AI analysis.`);
               }
-              
-              const apiData = await apiResponse.json();
-              const modelReport = apiData.choices?.[0]?.message?.content?.trim() || '';
-              const coverageSummary = {
-                coverage: { lineRate: linePct, branchRate: branchPct, threshold, pass },
-                tests: { total: totalTests, passed: passedCount, failed: failedCount },
-                timestamp: coverageData.generatedAt,
-                model: 'meta/llama-3.3-70b-instruct',
-                report: modelReport
-              };
-              
-              fs.writeFileSync('coverage-summary.json', JSON.stringify(coverageSummary, null, 2));
-              fs.writeFileSync('coverage-report.md', modelReport);
             }
             
             core.setOutput('coverage_pass', String(pass));
@@ -312,36 +321,45 @@ jobs:
               generatedAt: new Date().toISOString()
             };
             
-            const apiResponse = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
-              method: 'POST',
-              headers: {
-                'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}`,
-                'Content-Type': 'application/json',
-                'Accept': 'application/json'
-              },
-              body: JSON.stringify({
-                model: 'nvidia/llama-3.1-nemotron-ultra-253b-v1',
-                temperature: 0.1,
-                top_p: 0.9,
-                max_tokens: 1024,
-                stream: false,
-                messages: [
-                  { role: 'system', content: 'You are a security analyst. Given a Trivy JSON report summary (counts and sample findings), write a concise Markdown summary.' },
-                  { role: 'user', content: JSON.stringify(securityData) }
-                ]
-              })
-            });
-            
-            if (!apiResponse.ok) {
-              const errorText = await apiResponse.text();
-              core.setFailed(`NVIDIA NIM ${apiResponse.status}: ${errorText.slice(0, 500)}`);
-              return;
+            try {
+              const controller = new AbortController();
+              const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 minute timeout
+              
+              const apiResponse = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}`,
+                  'Content-Type': 'application/json',
+                  'Accept': 'application/json'
+                },
+                body: JSON.stringify({
+                  model: 'nvidia/llama-3.1-nemotron-ultra-253b-v1',
+                  temperature: 0.1,
+                  top_p: 0.9,
+                  max_tokens: 1024,
+                  stream: false,
+                  messages: [
+                    { role: 'system', content: 'You are a security analyst. Given a Trivy JSON report summary (counts and sample findings), write a concise Markdown summary.' },
+                    { role: 'user', content: JSON.stringify(securityData) }
+                  ]
+                }),
+                signal: controller.signal
+              });
+              
+              clearTimeout(timeoutId);
+              
+              if (!apiResponse.ok) {
+                const errorText = await apiResponse.text();
+                console.warn(`NVIDIA NIM API error ${apiResponse.status}: ${errorText.slice(0, 200)}`);
+              } else {
+                const llmResponse = await apiResponse.json();
+                const modelReport = llmResponse.choices?.[0]?.message?.content?.trim() || '';
+                fs.writeFileSync('trivy-summary.md', modelReport);
+                fs.writeFileSync('trivy-summary.json', JSON.stringify({ counts: securityData.counts, sample: securityData.sample, timestamp: securityData.generatedAt, model: 'nvidia/llama-3.1-nemotron-ultra-253b-v1' }, null, 2));
+              }
+            } catch (error) {
+              console.warn(`NVIDIA NIM API call failed: ${error.message}. Continuing without AI analysis.`);
             }
-            
-            const llmResponse = await apiResponse.json();
-            const modelReport = llmResponse.choices?.[0]?.message?.content?.trim() || '';
-            fs.writeFileSync('trivy-summary.md', modelReport);
-            fs.writeFileSync('trivy-summary.json', JSON.stringify({ counts: securityData.counts, sample: securityData.sample, timestamp: securityData.generatedAt, model: 'nvidia/llama-3.1-nemotron-ultra-253b-v1' }, null, 2));
 
       - name: Upload Trivy summary
         uses: actions/upload-artifact@v4
