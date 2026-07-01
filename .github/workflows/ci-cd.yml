@@ -154,7 +154,6 @@ jobs:
           script: |
             const fs = require('fs');
             const { execSync } = require('child_process');
-            const githubCore = require('@actions/core');
             
             // Parse coverage report
             const coberturaXml = fs.readFileSync('coverage.cobertura.xml', 'utf-8');
@@ -213,7 +212,7 @@ jobs:
               
               if (!apiResponse.ok) {
                 const errorText = await apiResponse.text();
-                githubCore.setFailed(`NVIDIA NIM ${apiResponse.status}: ${errorText.slice(0, 500)}`);
+                core.setFailed(`NVIDIA NIM ${apiResponse.status}: ${errorText.slice(0, 500)}`);
                 return;
               }
               
@@ -231,9 +230,9 @@ jobs:
               fs.writeFileSync('coverage-report.md', modelReport);
             }
             
-            githubCore.setOutput('coverage_pass', String(pass));
-            githubCore.setOutput('line_rate', linePct);
-            githubCore.setOutput('branch_rate', branchPct);
+            core.setOutput('coverage_pass', String(pass));
+            core.setOutput('line_rate', linePct);
+            core.setOutput('branch_rate', branchPct);
 
       - name: Upload coverage summary
         uses: actions/upload-artifact@v4
@@ -288,11 +287,10 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const githubCore = require('@actions/core');
             const reportRaw = fs.existsSync('trivy-report.json') ? fs.readFileSync('trivy-report.json', 'utf-8') : null;
             
             if (!reportRaw) {
-              githubCore.setFailed('Trivy report not found');
+              core.setFailed('Trivy report not found');
               return;
             }
             
@@ -336,7 +334,7 @@ jobs:
             
             if (!apiResponse.ok) {
               const errorText = await apiResponse.text();
-              githubCore.setFailed(`NVIDIA NIM ${apiResponse.status}: ${errorText.slice(0, 500)}`);
+              core.setFailed(`NVIDIA NIM ${apiResponse.status}: ${errorText.slice(0, 500)}`);
               return;
             }
             
